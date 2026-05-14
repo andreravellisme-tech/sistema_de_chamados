@@ -1,0 +1,1665 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="X-Content-Type-Options" content="nosniff">
+<meta http-equiv="X-Frame-Options" content="DENY">
+<meta name="referrer" content="no-referrer">
+<title>TI Escolar · Sistema de Chamados</title>
+
+<script type="module">
+import { initializeApp }   from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getFirestore, collection, addDoc, updateDoc, deleteDoc,
+         doc, onSnapshot, query, orderBy, serverTimestamp,
+         arrayUnion, getDoc, setDoc, getDocs, limit }
+                            from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+import { getAuth, signInWithEmailAndPassword, signOut,
+         onAuthStateChanged, sendPasswordResetEmail,
+         updatePassword, EmailAuthProvider,
+         reauthenticateWithCredential }
+                            from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+
+// ════════════════════════════════════════════════════
+// ⚙️  CONFIGURAÇÃO FIREBASE — substitua com seus dados
+// ════════════════════════════════════════════════════
+const firebaseConfig = {
+  apiKey:            "AIzaSyBu7afq2XzjLN-gbi-ayLx_fjyCqJN0WVQ",
+  authDomain:        "sistema-de-chamados-b8185.firebaseapp.com",
+  projectId:         "sistema-de-chamados-b8185",
+  storageBucket:     "sistema-de-chamados-b8185.firebasestorage.app",
+  messagingSenderId: "673764598147",
+  appId:             "1:673764598147:web:43b161210a3f14725096b6",
+  measurementId:     "G-0BNVG6GVQ7"
+};
+// ════════════════════════════════════════════════════
+
+const CONFIG_OK = !firebaseConfig.apiKey.includes('COLE_AQUI');
+
+// ── Anti força-bruta (cliente) ──────────────────────
+const _fails = {};
+function registrarFalha(email) {
+  const k = email.toLowerCase();
+  if (!_fails[k]) _fails[k] = { n: 0, ate: 0 };
+  _fails[k].n++;
+  if      (_fails[k].n >= 10) _fails[k].ate = Date.now() + 3_600_000; // 1h
+  else if (_fails[k].n >=  8) _fails[k].ate = Date.now() + 1_800_000; // 30min
+  else if (_fails[k].n >=  5) _fails[k].ate = Date.now() +   300_000; // 5min
+}
+function estaBloqueado(email) {
+  const k = email.toLowerCase();
+  return !!(_fails[k] && _fails[k].ate > Date.now());
+}
+function minutosRestantes(email) {
+  const k = email.toLowerCase();
+  return _fails[k] ? Math.ceil(Math.max(0, _fails[k].ate - Date.now()) / 60000) : 0;
+}
+
+// ── Inicialização Firebase ───────────────────────────
+const app  = initializeApp(firebaseConfig);
+const db   = getFirestore(app);
+const auth = getAuth(app);
+
+// ── Estado global ───────────────────────────────────
+window._G = {
+  user: null, perfil: null,
+  chamados: [], escolas: [], membros: [], usuarios: [],
+  notifs: [], currentFilter: 'todos',
+  assigningId: null, viewingId: null,
+  unsubs: []
+};
+
+// ── Controle de permissões RBAC ─────────────────────
+// admin        → acesso total
+// tecnico      → leitura + escrita em chamados + atribuição
+// visualizador → somente leitura
+// escola       → abre/acompanha chamados somente da própria escola
+window.perm = function(acao) {
+  const r = window._G.perfil?.role;
+  if (!r) return false;
+  if (r === 'admin')       return true;
+  if (r === 'tecnico')     return ['ler','chamado','atribuir'].includes(acao);
+  if (r === 'visualizador')return acao === 'ler';
+  if (r === 'escola')      return ['ler','chamado_escola'].includes(acao);
+  return false;
+};
+window.isEscola       = function() { return window._G.perfil?.role === 'escola'; };
+window.escolaDoUsuario= function() { return window._G.perfil?.escolaId || null; };
+
+// ── Operações Firestore ─────────────────────────────
+window._DB = {
+  async novoChamado(d) {
+    if (!perm('chamado') && !perm('chamado_escola')) throw new Error('Sem permissão');
+    // perfil escola: força o escolaId da própria escola
+    if (isEscola()) d.escolaId = escolaDoUsuario();
+    d.criadoEm  = serverTimestamp();
+    d.criadoPor = _G.user.uid;
+    d.timeline  = [{ a: 'Chamado aberto por ' + (_G.perfil?.nome || 'usuário'), t: agora() }];
+    if (d.membroId) {
+      const m = _G.membros.find(x => x.id === d.membroId);
+      if (m) d.timeline.push({ a: `Atribuído a ${m.nome}`, t: agora() });
+    }
+    return addDoc(collection(db,'chamados'), d);
+  },
+  async editarChamado(id, d) {
+    if (!perm('chamado')) throw new Error('Sem permissão');
+    d.atualizadoEm  = serverTimestamp();
+    d.atualizadoPor = _G.user.uid;
+    return updateDoc(doc(db,'chamados',id), d);
+  },
+  async addTimeline(id, entry) {
+    if (!perm('chamado')) throw new Error('Sem permissão');
+    return updateDoc(doc(db,'chamados',id), { timeline: arrayUnion(entry) });
+  },
+  async novaEscola(d) {
+    const r = _G.perfil?.role;
+    if (r !== 'admin' && r !== 'tecnico') throw new Error('Sem permissão');
+    d.criadoEm = serverTimestamp();
+    return addDoc(collection(db,'escolas'), d);
+  },
+  async removerEscola(id) {
+    if (_G.perfil?.role !== 'admin') throw new Error('Sem permissão');
+    return deleteDoc(doc(db,'escolas',id));
+  },
+  async novoMembro(d) {
+    if (_G.perfil?.role !== 'admin') throw new Error('Apenas administradores podem cadastrar membros TI.');
+    d.criadoEm = serverTimestamp();
+    return addDoc(collection(db,'membros'), d);
+  },
+  async removerMembro(id) {
+    if (_G.perfil?.role !== 'admin') throw new Error('Sem permissão');
+    return deleteDoc(doc(db,'membros',id));
+  },
+  async registrarUsuario(uid, d) {
+    if (_G.perfil?.role !== 'admin') throw new Error('Sem permissão');
+    d.criadoEm = serverTimestamp();
+    return setDoc(doc(db,'usuarios',uid), d);
+  },
+  async editarUsuario(uid, d) {
+    if (_G.perfil?.role !== 'admin') throw new Error('Sem permissão');
+    return updateDoc(doc(db,'usuarios',uid), d);
+  },
+  async log(acao) {
+    const u = auth.currentUser;
+    if (!u) return;
+    return setDoc(doc(db,'logs_acesso', Date.now()+'_'+Math.random().toString(36).slice(2)), {
+      uid: u.uid, email: u.email, acao, ts: serverTimestamp()
+    }).catch(() => {});
+  },
+  async getLogs() {
+    const snap = await getDocs(query(collection(db,'logs_acesso'), orderBy('ts','desc'), limit(150)));
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  }
+};
+
+// ── Autenticação ────────────────────────────────────
+window._AUTH = {
+  async login(email, senha) {
+    if (estaBloqueado(email)) throw new Error('BLOQUEADO:' + minutosRestantes(email));
+    try {
+      const cred = await signInWithEmailAndPassword(auth, email, senha);
+      _fails[email.toLowerCase()] = { n: 0, ate: 0 };
+      await _DB.log('login');
+      return cred;
+    } catch(e) {
+      registrarFalha(email);
+      throw e;
+    }
+  },
+  async logout() {
+    await _DB.log('logout');
+    pararListeners();
+    return signOut(auth);
+  },
+  async resetSenha(email) {
+    return sendPasswordResetEmail(auth, email);
+  },
+  async trocarSenha(senhaAtual, novaSenha) {
+    const u = auth.currentUser;
+    const cred = EmailAuthProvider.credential(u.email, senhaAtual);
+    await reauthenticateWithCredential(u, cred);
+    return updatePassword(u, novaSenha);
+  }
+};
+
+// ── Listeners tempo real ────────────────────────────
+function pararListeners() {
+  _G.unsubs.forEach(fn => fn());
+  _G.unsubs = [];
+  _G.chamados = []; _G.escolas = []; _G.membros = []; _G.usuarios = [];
+}
+
+function iniciarListeners() {
+  pararListeners();
+  const add = fn => _G.unsubs.push(fn);
+  // perfil escola: escuta somente os chamados da própria escola
+  const qChamados = isEscola()
+    ? query(collection(db,'chamados'), where('escolaId','==', escolaDoUsuario()), orderBy('criadoEm','desc'))
+    : query(collection(db,'chamados'), orderBy('criadoEm','desc'));
+  add(onSnapshot(qChamados, s => {
+    _G.chamados = s.docs.map(d => ({id:d.id,...d.data()}));
+    render();
+  }));
+  add(onSnapshot(collection(db,'escolas'), s => {
+    _G.escolas = s.docs.map(d => ({id:d.id,...d.data()}));
+    render();
+  }));
+  add(onSnapshot(collection(db,'membros'), s => {
+    _G.membros = s.docs.map(d => ({id:d.id,...d.data()}));
+    render();
+  }));
+  if (_G.perfil?.role === 'admin') {
+    add(onSnapshot(collection(db,'usuarios'), s => {
+      _G.usuarios = s.docs.map(d => ({id:d.id,...d.data()}));
+      render();
+    }));
+  }
+}
+
+// ── Observer de autenticação ────────────────────────
+onAuthStateChanged(auth, async user => {
+  document.getElementById('loader').style.display = 'none';
+  if (user) {
+    const snap = await getDoc(doc(db,'usuarios', user.uid));
+    if (!snap.exists()) {
+      await signOut(auth);
+      mostrarLogin();
+      toast('Acesso não autorizado. Contate o administrador.', 'erro');
+      return;
+    }
+    const perfil = { id: snap.id, ...snap.data() };
+    if (perfil.ativo === false) {
+      await signOut(auth);
+      mostrarLogin();
+      toast('Conta desativada. Contate o administrador.', 'erro');
+      return;
+    }
+    _G.user   = user;
+    _G.perfil = perfil;
+    iniciarListeners();
+    mostrarApp();
+  } else {
+    _G.user = null; _G.perfil = null;
+    pararListeners();
+    mostrarLogin();
+  }
+});
+
+window.addEventListener('load', () => {
+  if (!CONFIG_OK) {
+    document.getElementById('loader').style.display = 'none';
+    document.getElementById('configBanner').style.display = 'flex';
+  }
+});
+
+function agora() { return new Date().toLocaleString('pt-BR'); }
+window.render = () => {};   // será sobrescrito após DOM
+</script>
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Sora:wght@300;400;500;600&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#08090e;--bg2:#0f1117;--bg3:#181c27;--bg4:#222840;
+  --brd:#1f2538;--brd2:#2d3555;
+  --tx:#dce5f5;--tx2:#7a89b8;--tx3:#3d4a6b;
+  --blue:#4d8fff;--blue2:#0a1f4a;
+  --grn:#34d17a;--grn2:#062818;
+  --yel:#f0b429;--yel2:#2a1e00;
+  --red:#f25757;--red2:#2a0808;
+  --pur:#a78bfa;--pur2:#1a0f3a;
+  --acc:#4d8fff;--r:8px;
+  font-family:'Sora',sans-serif;
+}
+body{background:var(--bg);color:var(--tx);min-height:100vh;font-size:13px;overflow-x:hidden}
+
+/* LOADER */
+#loader{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;gap:16px}
+.ld-logo{font-family:'IBM Plex Mono',monospace;font-size:22px;color:var(--blue)}
+.ld-bar{width:200px;height:2px;background:var(--brd);border-radius:2px;overflow:hidden}
+.ld-bar::after{content:'';display:block;height:100%;width:40%;background:var(--blue);border-radius:2px;animation:slide 1.2s ease-in-out infinite}
+@keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(400%)}}
+.ld-txt{font-size:12px;color:var(--tx2)}
+
+/* CONFIG BANNER */
+#configBanner{display:none;position:fixed;inset:0;background:var(--bg);z-index:9998;align-items:center;justify-content:center}
+.cfg-box{background:var(--bg2);border:1px solid var(--brd2);border-radius:16px;padding:36px;max-width:600px;width:92%}
+.cfg-box h2{font-family:'IBM Plex Mono',monospace;color:var(--blue);font-size:17px;margin-bottom:8px}
+.cfg-box p{color:var(--tx2);line-height:1.7;font-size:13px;margin-bottom:14px}
+.cfg-steps{counter-reset:s;list-style:none;margin-bottom:20px}
+.cfg-steps li{counter-increment:s;display:flex;gap:12px;padding:9px 0;border-bottom:1px solid var(--brd);font-size:12px;color:var(--tx2)}
+.cfg-steps li::before{content:counter(s);width:20px;height:20px;border-radius:50%;background:var(--blue2);color:var(--blue);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px}
+.cfg-steps li strong{color:var(--tx)} .cfg-steps li code{background:var(--bg3);padding:2px 5px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--blue)}
+
+/* ══ LOGIN ══ */
+#loginScreen{display:none;position:fixed;inset:0;background:var(--bg);align-items:center;justify-content:center;z-index:500}
+#loginScreen.on{display:flex}
+.lw{width:380px;background:var(--bg2);border:1px solid var(--brd2);border-radius:16px;padding:38px;box-shadow:0 40px 100px rgba(0,0,0,.7);animation:fadeUp .3s ease}
+@keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+.ll{text-align:center;margin-bottom:28px}
+.ll-ico{width:52px;height:52px;background:var(--blue2);border:2px solid var(--blue);border-radius:14px;display:inline-flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:10px}
+.ll h1{font-family:'IBM Plex Mono',monospace;font-size:15px;color:var(--tx)}
+.ll p{font-size:11px;color:var(--tx2);margin-top:3px}
+.l-err{background:var(--red2);border:1px solid rgba(242,87,87,.3);border-radius:7px;padding:10px 13px;font-size:12px;color:var(--red);margin-bottom:12px;display:none}
+.l-err.on{display:block}
+.l-info{background:var(--blue2);border:1px solid rgba(77,143,255,.3);border-radius:7px;padding:10px 13px;font-size:12px;color:var(--blue);margin-bottom:12px;display:none}
+.l-info.on{display:block}
+.l-lock{background:var(--yel2);border:1px solid rgba(240,180,41,.3);border-radius:7px;padding:10px 13px;font-size:12px;color:var(--yel);margin-bottom:12px;display:none}
+.l-lock.on{display:block}
+.l-foot{margin-top:14px;text-align:center}
+.l-foot a{font-size:12px;color:var(--blue);cursor:pointer}
+.l-foot a:hover{text-decoration:underline}
+
+/* TOPBAR */
+.topbar{background:var(--bg2);border-bottom:1px solid var(--brd);height:54px;display:flex;align-items:center;padding:0 20px;position:sticky;top:0;z-index:100;gap:16px}
+.logo{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:14px;color:var(--tx);display:flex;align-items:center;gap:10px}
+.logo-badge{background:var(--acc);color:#fff;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:600}
+.tc{flex:1;display:flex;align-items:center;gap:8px}
+.tr{display:flex;align-items:center;gap:8px}
+.odot{width:8px;height:8px;border-radius:50%;background:var(--grn);box-shadow:0 0 6px var(--grn);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.olbl{font-size:11px;color:var(--grn);font-family:'IBM Plex Mono',monospace}
+
+/* USER MENU */
+.umenu{position:relative}
+.uchip{background:var(--bg3);border:1px solid var(--brd2);border-radius:7px;padding:5px 12px;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:8px;transition:.12s}
+.uchip:hover{background:var(--bg4)}
+.rb{font-size:10px;padding:2px 7px;border-radius:10px}
+.rb-admin{background:var(--blue2);color:var(--blue)}
+.rb-tecnico{background:var(--pur2);color:var(--pur)}
+.rb-visualizador{background:var(--grn2);color:var(--grn)}
+.udrop{position:absolute;top:calc(100% + 8px);right:0;background:var(--bg2);border:1px solid var(--brd2);border-radius:10px;min-width:210px;box-shadow:0 16px 40px rgba(0,0,0,.5);z-index:200;display:none}
+.udrop.on{display:block;animation:fadeUp .15s ease}
+.ud-hd{padding:12px 16px;border-bottom:1px solid var(--brd)}
+.ud-em{font-size:11px;color:var(--tx2);margin-top:2px;word-break:break-all}
+.ud-it{padding:9px 16px;font-size:12px;color:var(--tx2);cursor:pointer;display:flex;align-items:center;gap:8px;transition:.1s}
+.ud-it:hover{background:var(--bg3);color:var(--tx)}
+.ud-it.danger{color:var(--red)}
+.ud-it.danger:hover{background:var(--red2)}
+
+/* LAYOUT */
+.layout{display:flex;height:calc(100vh - 54px)}
+.sidebar{width:212px;background:var(--bg2);border-right:1px solid var(--brd);display:flex;flex-direction:column;padding:12px 0;flex-shrink:0;overflow-y:auto}
+.sb-sect{padding:16px 16px 4px;font-size:10px;font-weight:600;color:var(--tx3);text-transform:uppercase;letter-spacing:.1em}
+.nav{display:flex;align-items:center;gap:8px;padding:9px 14px;cursor:pointer;color:var(--tx2);border-left:2px solid transparent;font-size:13px;transition:.12s;user-select:none}
+.nav:hover{background:var(--bg3);color:var(--tx)}
+.nav.on{background:var(--blue2);color:var(--blue);border-left-color:var(--blue)}
+.ni{font-size:14px;width:18px;text-align:center}
+.nc{margin-left:auto;background:var(--bg4);color:var(--tx2);font-size:10px;font-family:'IBM Plex Mono',monospace;border-radius:10px;padding:2px 7px;min-width:22px;text-align:center}
+.nav.on .nc{background:var(--blue2);color:var(--blue)}
+
+/* MAIN */
+.main{flex:1;overflow-y:auto;padding:24px}
+.page{display:none}
+.page.on{display:block;animation:fadeIn .2s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+
+/* PAGE HEADER */
+.ph{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
+.pt{font-size:20px;font-weight:600}
+.ps{font-size:12px;color:var(--tx2);margin-top:3px}
+
+/* BUTTONS */
+.btn{display:inline-flex;align-items:center;gap:6px;border:none;border-radius:7px;padding:8px 16px;font-size:12px;font-weight:500;cursor:pointer;transition:.12s;font-family:'Sora',sans-serif;white-space:nowrap}
+.bp{background:var(--acc);color:#fff}.bp:hover{filter:brightness(1.15)}
+.bs{background:var(--bg3);color:var(--tx);border:1px solid var(--brd2)}.bs:hover{background:var(--bg4)}
+.bd{background:var(--red2);color:var(--red);border:1px solid rgba(242,87,87,.3)}.bd:hover{filter:brightness(1.2)}
+.bw{background:var(--yel2);color:var(--yel);border:1px solid rgba(240,180,41,.25)}.bw:hover{filter:brightness(1.2)}
+.btn-sm{padding:5px 10px;font-size:11px}
+.btn-xs{padding:3px 8px;font-size:11px}
+.btn:disabled{opacity:.35;cursor:not-allowed;pointer-events:none}
+
+/* STATS */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px}
+.stat{background:var(--bg2);border:1px solid var(--brd);border-radius:var(--r);padding:16px;position:relative;overflow:hidden}
+.stat::after{content:'';position:absolute;top:0;right:0;width:3px;height:100%}
+.stat.blue::after{background:var(--blue)}.stat.grn::after{background:var(--grn)}.stat.yel::after{background:var(--yel)}.stat.red::after{background:var(--red)}
+.sl{font-size:11px;color:var(--tx2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em}
+.sv{font-size:28px;font-weight:600;font-family:'IBM Plex Mono',monospace;line-height:1}
+.stat.blue .sv{color:var(--blue)}.stat.grn .sv{color:var(--grn)}.stat.yel .sv{color:var(--yel)}.stat.red .sv{color:var(--red)}
+
+/* CARD */
+.card{background:var(--bg2);border:1px solid var(--brd);border-radius:var(--r);overflow:hidden;margin-bottom:16px}
+.card-hd{padding:14px 16px;border-bottom:1px solid var(--brd);display:flex;align-items:center;justify-content:space-between}
+.card-ti{font-size:13px;font-weight:600}
+
+/* TABLE */
+.tbl{width:100%;border-collapse:collapse}
+.tbl th{background:var(--bg3);padding:10px 14px;text-align:left;font-size:10px;font-weight:600;color:var(--tx3);text-transform:uppercase;letter-spacing:.07em;border-bottom:1px solid var(--brd);white-space:nowrap}
+.tbl td{padding:11px 14px;border-bottom:1px solid var(--brd);vertical-align:middle}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr:hover td{background:rgba(255,255,255,.015)}
+.mono{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx2)}
+
+/* BADGES */
+.badge{display:inline-flex;align-items:center;gap:4px;border-radius:20px;padding:3px 9px;font-size:11px;font-weight:500;white-space:nowrap}
+.badge::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}
+.b-open{background:var(--blue2);color:var(--blue);border:1px solid rgba(77,143,255,.25)}
+.b-prog{background:var(--yel2);color:var(--yel);border:1px solid rgba(240,180,41,.25)}
+.b-done{background:var(--grn2);color:var(--grn);border:1px solid rgba(52,209,122,.25)}
+.b-urg{background:var(--red2);color:var(--red);border:1px solid rgba(242,87,87,.25)}
+.b-alta{background:var(--yel2);color:var(--yel);border:1px solid rgba(240,180,41,.25)}
+.b-media{background:var(--blue2);color:var(--blue);border:1px solid rgba(77,143,255,.25)}
+.b-baixa{background:var(--bg3);color:var(--tx2);border:1px solid var(--brd2)}
+
+/* CHIP MEMBRO */
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--pur2);border:1px solid rgba(167,139,250,.25);border-radius:20px;padding:3px 10px;font-size:11px;color:var(--pur)}
+.chip-av{width:16px;height:16px;border-radius:50%;background:var(--pur);display:flex;align-items:center;justify-content:center;font-size:8px;color:#fff;font-weight:600;flex-shrink:0}
+.unass{font-size:11px;color:var(--tx3)}
+
+/* FILTERS */
+.filts{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+.flt{background:var(--bg3);border:1px solid var(--brd2);border-radius:20px;padding:5px 14px;font-size:11px;color:var(--tx2);cursor:pointer;transition:.1s;font-family:'Sora',sans-serif}
+.flt:hover,.flt.on{background:var(--blue2);color:var(--blue);border-color:rgba(77,143,255,.4)}
+
+/* MODAL */
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:200;align-items:center;justify-content:center;backdrop-filter:blur(2px)}
+.overlay.on{display:flex}
+.modal{background:var(--bg2);border:1px solid var(--brd2);border-radius:14px;width:560px;max-height:88vh;overflow-y:auto;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+.m-hd{padding:20px 24px;border-bottom:1px solid var(--brd);display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:var(--bg2);z-index:1}
+.m-ti{font-size:15px;font-weight:600}
+.m-cl{background:none;border:none;color:var(--tx2);font-size:18px;cursor:pointer;padding:2px 8px;border-radius:5px}
+.m-cl:hover{background:var(--bg3);color:var(--tx)}
+.m-bd{padding:20px 24px}
+.m-ft{padding:14px 24px;border-top:1px solid var(--brd);display:flex;justify-content:flex-end;gap:8px;background:var(--bg2);position:sticky;bottom:0}
+
+/* FORM */
+.fg{margin-bottom:14px}
+.fg label{display:block;font-size:11px;font-weight:500;color:var(--tx2);margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em}
+.req{color:var(--red)}
+.fc{width:100%;background:var(--bg);border:1px solid var(--brd2);border-radius:7px;padding:9px 12px;color:var(--tx);font-family:'Sora',sans-serif;font-size:13px;outline:none;transition:.15s}
+.fc:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(77,143,255,.15)}
+.fc::placeholder{color:var(--tx3)}
+select.fc option{background:var(--bg2)}
+.fr{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.pw{position:relative}
+.pw .fc{padding-right:40px}
+.ptog{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--tx2);cursor:pointer;font-size:14px;padding:2px}
+.sbar{height:3px;border-radius:2px;margin-top:6px;background:var(--bg3);overflow:hidden}
+.sfill{height:100%;border-radius:2px;transition:.3s}
+
+/* NOTIF PANEL */
+.np{position:fixed;top:54px;right:0;width:340px;height:calc(100vh - 54px);background:var(--bg2);border-left:1px solid var(--brd);z-index:150;transform:translateX(100%);transition:.25s cubic-bezier(.4,0,.2,1);overflow-y:auto;display:flex;flex-direction:column}
+.np.on{transform:translateX(0)}
+.np-hd{padding:14px 16px;border-bottom:1px solid var(--brd);display:flex;justify-content:space-between;align-items:center;font-weight:600;font-size:13px;position:sticky;top:0;background:var(--bg2)}
+.nit{padding:12px 16px;border-bottom:1px solid var(--brd);cursor:pointer;transition:.1s}
+.nit:hover{background:var(--bg3)}
+.nit.unread{border-left:3px solid var(--blue)}
+.nit .nt{font-size:12px;font-weight:500;margin-bottom:2px}
+.nit .nd{font-size:11px;color:var(--tx2)}
+.nit .nm{font-size:10px;color:var(--tx3);margin-top:3px;font-family:'IBM Plex Mono',monospace}
+
+/* DETAIL PANEL */
+.dp{position:fixed;top:54px;right:0;width:460px;height:calc(100vh - 54px);background:var(--bg2);border-left:1px solid var(--brd);z-index:140;display:none;overflow-y:auto;flex-direction:column}
+.dp.on{display:flex}
+.dp-hd{padding:16px 20px;border-bottom:1px solid var(--brd);display:flex;justify-content:space-between;align-items:flex-start;position:sticky;top:0;background:var(--bg2);z-index:1}
+.dp-bd{padding:20px;flex:1}
+.dp-sec{margin-bottom:20px}
+.dp-st{font-size:10px;font-weight:600;color:var(--tx3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px}
+.dp-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--brd);font-size:12px}
+.dp-row:last-child{border-bottom:none}
+.dp-row label{color:var(--tx2)}
+.dp-desc{background:var(--bg3);border-radius:7px;padding:12px;font-size:12px;line-height:1.7;color:var(--tx2)}
+
+/* TIMELINE */
+.tl{position:relative;padding-left:20px}
+.tl::before{content:'';position:absolute;left:6px;top:8px;bottom:8px;width:1px;background:var(--brd2)}
+.tl-it{position:relative;margin-bottom:14px}
+.tl-it::before{content:'';position:absolute;left:-17px;top:6px;width:7px;height:7px;border-radius:50%;background:var(--blue);border:2px solid var(--bg2)}
+.tl-a{font-size:12px;font-weight:500}
+.tl-t{font-size:10px;color:var(--tx3);font-family:'IBM Plex Mono',monospace;margin-top:2px}
+
+/* ESCOLA CARD */
+.sc{background:var(--bg2);border:1px solid var(--brd);border-radius:var(--r);padding:16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;transition:.15s}
+.sc:hover{border-color:var(--brd2)}
+.sc-inf{display:flex;align-items:center;gap:12px}
+.sc-av{width:38px;height:38px;border-radius:10px;background:var(--blue2);border:1px solid rgba(77,143,255,.3);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:var(--blue);font-family:'IBM Plex Mono',monospace;flex-shrink:0}
+.sc-nm{font-size:14px;font-weight:500}
+.sc-me{font-size:11px;color:var(--tx2);margin-top:2px}
+.sc-st{display:flex;gap:20px;align-items:center}
+.sc-sv .v{font-size:18px;font-weight:700;font-family:'IBM Plex Mono',monospace;line-height:1}
+.sc-sv .l{font-size:10px;color:var(--tx2);margin-top:2px;text-transform:uppercase;letter-spacing:.05em}
+
+/* MEMBRO */
+.mav{width:34px;height:34px;border-radius:50%;background:var(--pur2);border:1px solid rgba(167,139,250,.3);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:var(--pur);font-family:'IBM Plex Mono',monospace;flex-shrink:0}
+
+/* NOTIF BTN */
+.nb{position:relative;background:var(--bg3);border:1px solid var(--brd2);border-radius:7px;padding:6px 10px;cursor:pointer;font-size:15px;transition:.12s;color:var(--tx)}
+.nb:hover{background:var(--bg4)}
+.nbc{position:absolute;top:-5px;right:-5px;background:var(--red);color:#fff;font-size:9px;font-weight:700;border-radius:10px;padding:2px 5px;min-width:17px;text-align:center;border:2px solid var(--bg);display:none}
+.nbc.on{display:block}
+
+/* AÇÕES */
+.a-assign{background:var(--pur2);border:1px solid rgba(167,139,250,.3);color:var(--pur);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:'Sora',sans-serif;transition:.12s}
+.a-assign:hover{filter:brightness(1.2)}
+.a-start{background:var(--yel2);color:var(--yel);border:1px solid rgba(240,180,41,.25);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:'Sora',sans-serif;transition:.12s}
+.a-start:hover{filter:brightness(1.2)}
+.a-done{background:var(--grn2);color:var(--grn);border:1px solid rgba(52,209,122,.25);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:'Sora',sans-serif;transition:.12s}
+.a-done:hover{filter:brightness(1.2)}
+
+/* TOAST */
+.toast-el{position:fixed;bottom:24px;right:24px;border-radius:8px;padding:12px 18px;font-size:12px;font-weight:500;z-index:9999;transform:translateY(80px);opacity:0;transition:.3s;max-width:340px}
+.toast-el.on{transform:translateY(0);opacity:1}
+.toast-el.ok{background:var(--grn2);border:1px solid var(--grn);color:var(--grn)}
+.toast-el.erro{background:var(--red2);border:1px solid var(--red);color:var(--red)}
+.toast-el.aviso{background:var(--yel2);border:1px solid var(--yel);color:var(--yel)}
+
+/* EMPTY */
+.empty{text-align:center;padding:50px 20px;color:var(--tx3)}
+.empty-ico{font-size:36px;margin-bottom:10px}
+
+/* LOG BADGE */
+.lb{font-size:10px;padding:2px 7px;border-radius:10px;font-family:'IBM Plex Mono',monospace}
+.lb-login{background:var(--blue2);color:var(--blue)}
+.lb-logout{background:var(--bg3);color:var(--tx2)}
+
+/* SECURITY NOTICE */
+.sec-notice{background:var(--bg3);border:1px solid var(--brd2);border-left:3px solid var(--blue);border-radius:8px;padding:14px;margin-bottom:20px;font-size:12px;color:var(--tx2);line-height:1.7}
+.sec-notice strong{color:var(--tx)}
+
+/* ESCOLA badge */
+.rb-escola{background:#0a2a1a;color:var(--grn);border:1px solid rgba(52,209,122,.3)}
+
+/* PORTAL ESCOLA cards */
+.pe-card{background:var(--bg2);border:1px solid var(--brd);border-radius:var(--r);padding:16px;margin-bottom:12px;transition:.15s;cursor:pointer}
+.pe-card:hover{border-color:var(--brd2);background:var(--bg3)}
+.pe-card-hd{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+.pe-card-titulo{font-size:13px;font-weight:500;line-height:1.5;flex:1}
+.pe-card-meta{display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--tx2)}
+.pe-card-meta span{display:flex;align-items:center;gap:4px}
+.pe-card-footer{display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding-top:12px;border-top:1px solid var(--brd)}
+.pe-empty{text-align:center;padding:60px 20px;color:var(--tx3)}
+.pe-empty .ei{font-size:40px;margin-bottom:12px}
+</style>
+</head>
+<body>
+
+<!-- LOADER -->
+<div id="loader">
+  <div class="ld-logo">🔒 TI Escolar</div>
+  <div class="ld-bar"></div>
+  <div class="ld-txt">Verificando autenticação...</div>
+</div>
+
+<!-- CONFIG BANNER -->
+<div id="configBanner">
+  <div class="cfg-box">
+    <h2>⚙️ Configure o Firebase</h2>
+    <p>Abra o arquivo HTML num editor de texto e substitua os campos <code>COLE_AQUI_...</code> pelos dados do seu projeto.</p>
+    <ol class="cfg-steps">
+      <li><strong>Acesse</strong> <a href="https://console.firebase.google.com" target="_blank" style="color:var(--blue)">console.firebase.google.com</a> → crie um projeto</li>
+      <li><strong>Ative o Firestore Database</strong> → modo teste → região <code>southamerica-east1</code></li>
+      <li><strong>Ative o Authentication</strong> → Sign-in method → <strong>Email/Senha</strong> → Ativar</li>
+      <li>Adicione app Web (<code>&lt;/&gt;</code>) → copie o <code>firebaseConfig</code> → cole no HTML</li>
+      <li>Aplique as <strong>Regras do Firestore</strong> descritas no arquivo <code>LEIA-ME.md</code></li>
+      <li>Crie o <strong>primeiro usuário Admin</strong> via Firebase Auth e execute <code>setup-admin.js</code></li>
+    </ol>
+    <p style="background:var(--bg3);padding:12px;border-radius:7px;border-left:3px solid var(--blue);font-size:12px;color:var(--tx2)">
+      📄 Leia o arquivo <strong style="color:var(--tx)">LEIA-ME.md</strong> para instruções completas de segurança.
+    </p>
+  </div>
+</div>
+
+<!-- ══ TELA DE LOGIN ══ -->
+<div id="loginScreen">
+  <div class="lw">
+    <div class="ll">
+      <div class="ll-ico">💻</div>
+      <h1>TI Escolar</h1>
+      <p>Sistema de Chamados — Acesso Restrito</p>
+    </div>
+    <div class="l-lock" id="lLock"></div>
+    <div class="l-err"  id="lErr"></div>
+    <div class="l-info" id="lInfo"></div>
+
+    <!-- login form -->
+    <div id="formLogin">
+      <div class="fg">
+        <label>E-mail institucional</label>
+        <input class="fc" id="lEmail" type="email" placeholder="usuario@sme.edu.br" autocomplete="email">
+      </div>
+      <div class="fg">
+        <label>Senha</label>
+        <div class="pw">
+          <input class="fc" id="lSenha" type="password" placeholder="••••••••" autocomplete="current-password">
+          <button class="ptog" onclick="togglePwd('lSenha',this)" type="button">👁</button>
+        </div>
+      </div>
+      <button class="btn bp" style="width:100%;justify-content:center;padding:11px" onclick="doLogin()" id="btnLogin">🔐 Entrar</button>
+      <div class="l-foot"><a onclick="showReset()">Esqueci minha senha</a></div>
+    </div>
+
+    <!-- reset form -->
+    <div id="formReset" style="display:none">
+      <p style="font-size:12px;color:var(--tx2);margin-bottom:14px">Informe seu e-mail para receber o link de redefinição de senha.</p>
+      <div class="fg">
+        <label>E-mail</label>
+        <input class="fc" id="rEmail" type="email" placeholder="usuario@sme.edu.br">
+      </div>
+      <button class="btn bp" style="width:100%;justify-content:center;padding:11px" onclick="doReset()">📧 Enviar link</button>
+      <div class="l-foot" style="margin-top:10px"><a onclick="showLogin()">← Voltar ao login</a></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ TOPBAR ══ -->
+<div class="topbar" id="topbar" style="display:none">
+  <div class="logo"><span class="logo-badge">TI</span> Sistema de Chamados Escolares</div>
+  <div class="tc"><div class="odot"></div><span class="olbl">Online · Tempo real</span></div>
+  <div class="tr">
+    <button class="nb" onclick="toggleNotif()" id="btnNotif">🔔<span class="nbc" id="nbc"></span></button>
+    <div class="umenu">
+      <div class="uchip" onclick="toggleUMenu()">
+        <span>👤</span>
+        <span id="uNome">—</span>
+        <span class="rb" id="uRole"></span>
+        <span style="font-size:10px;color:var(--tx3)">▾</span>
+      </div>
+      <div class="udrop" id="udrop">
+        <div class="ud-hd">
+          <div style="font-weight:600;font-size:13px" id="udNome">—</div>
+          <div class="ud-em" id="udEmail">—</div>
+        </div>
+        <div class="ud-it" onclick="abrirM('mSenha')">🔑 Alterar senha</div>
+        <div class="ud-it danger" onclick="doLogout()">⎋ Sair</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ LAYOUT ══ -->
+<div class="layout" id="mainLayout" style="display:none">
+  <div class="sidebar">
+    <div class="sb-sect">Menu</div>
+    <div class="nav on" onclick="irPagina('dashboard',this)"><span class="ni">📊</span> Dashboard <span class="nc" id="nc-d">—</span></div>
+    <div class="nav" onclick="irPagina('chamados',this)"><span class="ni">🎫</span> Chamados <span class="nc" id="nc-c">0</span></div>
+    <div class="nav" onclick="irPagina('escolas',this)"><span class="ni">🏫</span> Escolas <span class="nc" id="nc-e">0</span></div>
+    <div class="nav" onclick="irPagina('membros',this)"><span class="ni">👥</span> Membros TI <span class="nc" id="nc-m">0</span></div>
+    <div class="nav" id="navUsr" onclick="irPagina('usuarios',this)"><span class="ni">🛡</span> Usuários <span class="nc" id="nc-u">0</span></div>
+    <div class="nav" id="navLogs" onclick="irPagina('logs',this)"><span class="ni">📋</span> Logs de Acesso</div>
+    <div class="sb-sect">Filtros</div>
+    <div class="nav" onclick="irFiltro('urgente',this)"><span class="ni">🔴</span> Urgentes <span class="nc" id="nc-urg">0</span></div>
+    <div class="nav" onclick="irFiltro('aberto',this)"><span class="ni">🔵</span> Em aberto <span class="nc" id="nc-ab">0</span></div>
+    <div class="nav" onclick="irFiltro('andamento',this)"><span class="ni">🟡</span> Andamento <span class="nc" id="nc-and">0</span></div>
+    <div class="nav" onclick="irFiltro('concluido',this)"><span class="ni">🟢</span> Concluídos <span class="nc" id="nc-ok">0</span></div>
+  </div>
+
+  <div class="main">
+    <!-- DASHBOARD -->
+    <div class="page on" id="page-dashboard">
+      <div class="ph">
+        <div><div class="pt">Dashboard</div><div class="ps">Visão geral em tempo real</div></div>
+        <button class="btn bp" id="btnNovoChamado" onclick="abrirM('mCall')">➕ Novo Chamado</button>
+      </div>
+      <div class="stats">
+        <div class="stat blue"><div class="sl">Total</div><div class="sv" id="sTotal">—</div></div>
+        <div class="stat yel"><div class="sl">Em Andamento</div><div class="sv" id="sAnd">—</div></div>
+        <div class="stat grn"><div class="sl">Concluídos</div><div class="sv" id="sDone">—</div></div>
+        <div class="stat red"><div class="sl">Urgentes</div><div class="sv" id="sUrg">—</div></div>
+      </div>
+      <div class="card">
+        <div class="card-hd"><span class="card-ti">Chamados Recentes</span><button class="btn bs btn-sm" onclick="irPagina('chamados',null)">Ver todos →</button></div>
+        <table class="tbl"><thead><tr><th>ID</th><th>Escola</th><th>Descrição</th><th>Prioridade</th><th>Status</th><th>Responsável</th><th>Ações</th></tr></thead>
+        <tbody id="tbRecent"></tbody></table>
+      </div>
+    </div>
+
+    <!-- CHAMADOS -->
+    <div class="page" id="page-chamados">
+      <div class="ph">
+        <div><div class="pt">Chamados</div><div class="ps">Todos os chamados de manutenção de TI</div></div>
+        <button class="btn bp" id="btnNovoChamado2" onclick="abrirM('mCall')">➕ Novo Chamado</button>
+      </div>
+      <div class="filts">
+        <button class="flt on" onclick="setFiltro('todos',this)">Todos</button>
+        <button class="flt" onclick="setFiltro('aberto',this)">Aberto</button>
+        <button class="flt" onclick="setFiltro('andamento',this)">Em Andamento</button>
+        <button class="flt" onclick="setFiltro('concluido',this)">Concluído</button>
+        <button class="flt" onclick="setFiltro('urgente',this)">🔴 Urgente</button>
+      </div>
+      <div class="card">
+        <table class="tbl"><thead><tr><th>ID</th><th>Escola</th><th>Descrição</th><th>Categoria</th><th>Prioridade</th><th>Status</th><th>Responsável</th><th>Data</th><th>Ações</th></tr></thead>
+        <tbody id="tbAll"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ESCOLAS -->
+    <div class="page" id="page-escolas">
+      <div class="ph">
+        <div><div class="pt">Unidades Escolares</div><div class="ps">Escolas atendidas pela equipe TI</div></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn bs btn-sm" onclick="testarFirestore()" title="Testar conexão com o banco de dados">🔧 Testar Conexão</button>
+          <button class="btn bp" id="btnNovaEscola" onclick="abrirM('mEscola')">➕ Nova Escola</button>
+        </div>
+      </div>
+      <div id="msgDiag" style="display:none;margin-bottom:16px"></div>
+      <div id="listaEscolas"></div>
+    </div>
+
+    <!-- MEMBROS -->
+    <div class="page" id="page-membros">
+      <div class="ph">
+        <div><div class="pt">Membros da Equipe TI</div><div class="ps">Técnicos responsáveis pelos atendimentos</div></div>
+        <button class="btn bp" id="btnNovoMembro" onclick="abrirM('mMembro')">➕ Novo Membro</button>
+      </div>
+      <div class="card">
+        <table class="tbl"><thead><tr><th>Técnico</th><th>Especialidade</th><th>Email</th><th>Chamados Ativos</th><th>Status</th><th>Ações</th></tr></thead>
+        <tbody id="tbMembros"></tbody></table>
+      </div>
+    </div>
+
+    <!-- USUÁRIOS (admin) -->
+    <div class="page" id="page-usuarios">
+      <div class="ph">
+        <div><div class="pt">🛡 Usuários do Sistema</div><div class="ps">Controle de acesso — somente Administradores</div></div>
+        <button class="btn bp" onclick="abrirM('mUsuario')">➕ Novo Usuário</button>
+      </div>
+      <div class="sec-notice">
+        <strong>Como funciona:</strong> Primeiro crie o usuário no <strong>Firebase Authentication</strong> (console.firebase.google.com → Authentication → Adicionar usuário), depois registre aqui com o UID gerado para ativar o acesso ao sistema e definir o perfil de permissão.
+      </div>
+      <div class="card">
+        <table class="tbl"><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Status</th><th>Criado em</th><th>Ações</th></tr></thead>
+        <tbody id="tbUsuarios"></tbody></table>
+      </div>
+    </div>
+
+    <!-- LOGS (admin) -->
+    <div class="page" id="page-logs">
+      <div class="ph"><div><div class="pt">📋 Logs de Acesso</div><div class="ps">Histórico de autenticações — somente Administradores</div></div></div>
+      <div class="card">
+        <table class="tbl"><thead><tr><th>Data / Hora</th><th>E-mail</th><th>Evento</th></tr></thead>
+        <tbody id="tbLogs"></tbody></table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- NOTIF PANEL -->
+<div class="np" id="np">
+  <div class="np-hd">🔔 Notificações <button class="btn bs btn-sm" onclick="markRead()">Marcar lidas</button></div>
+  <div id="npList" style="flex:1"></div>
+</div>
+
+<!-- DETAIL PANEL -->
+<div class="dp" id="dpanel">
+  <div class="dp-hd">
+    <div>
+      <div style="font-size:15px;font-weight:600" id="dpTitle">Chamado</div>
+      <div style="margin-top:6px" id="dpBadges"></div>
+    </div>
+    <button class="btn bs btn-sm" onclick="fecharDetail()">✕ Fechar</button>
+  </div>
+  <div class="dp-bd" id="dpBody"></div>
+</div>
+
+<!-- ══ MODAIS ══ -->
+
+<!-- Novo Chamado -->
+<div class="overlay" id="mCall">
+  <div class="modal">
+    <div class="m-hd"><span class="m-ti">📋 Novo Chamado de Manutenção</span><button class="m-cl" onclick="fecharM('mCall')">✕</button></div>
+    <div class="m-bd">
+      <div class="fg"><label>Unidade Escolar <span class="req">*</span></label><select class="fc" id="fEscola"></select></div>
+      <div class="fr">
+        <div class="fg"><label>Categoria <span class="req">*</span></label>
+          <select class="fc" id="fCat"><option>Hardware</option><option>Software</option><option>Rede / Internet</option><option>Impressora</option><option>Projetor</option><option>Câmera / CFTV</option><option>Outros</option></select>
+        </div>
+        <div class="fg"><label>Prioridade <span class="req">*</span></label>
+          <select class="fc" id="fPrio"><option value="baixa">Baixa</option><option value="media" selected>Média</option><option value="alta">Alta</option><option value="urgente">Urgente</option></select>
+        </div>
+      </div>
+      <div class="fg"><label>Descrição do Problema <span class="req">*</span></label><textarea class="fc" id="fDesc" rows="3" placeholder="Descreva o problema detalhadamente..."></textarea></div>
+      <div class="fr">
+        <div class="fg"><label>Equipamento Afetado</label><input class="fc" id="fEquip" placeholder="Ex: PC-LAB-03"></div>
+        <div class="fg"><label>Atribuir Responsável</label><select class="fc" id="fMembro"><option value="">— Sem responsável —</option></select></div>
+      </div>
+      <div class="fg"><label>Solicitante</label><input class="fc" id="fSol" placeholder="Nome do professor / funcionário"></div>
+    </div>
+    <div class="m-ft">
+      <button class="btn bs" onclick="fecharM('mCall')">Cancelar</button>
+      <button class="btn bp" onclick="submitChamado()">✓ Abrir Chamado</button>
+    </div>
+  </div>
+</div>
+
+<!-- Nova Escola -->
+<div class="overlay" id="mEscola">
+  <div class="modal">
+    <div class="m-hd"><span class="m-ti">🏫 Nova Unidade Escolar</span><button class="m-cl" onclick="fecharM('mEscola')">✕</button></div>
+    <div class="m-bd">
+      <div class="fg"><label>Nome da Escola <span class="req">*</span></label><input class="fc" id="eNome" placeholder="Ex: EMEF Professor João da Silva"></div>
+      <div class="fr">
+        <div class="fg"><label>Bairro / Distrito</label><input class="fc" id="eBairro" placeholder="Bairro"></div>
+        <div class="fg"><label>Telefone</label><input class="fc" id="eTel" placeholder="(11) 0000-0000"></div>
+      </div>
+      <div class="fr">
+        <div class="fg"><label>Diretor(a)</label><input class="fc" id="eDir" placeholder="Nome do diretor(a)"></div>
+        <div class="fg"><label>E-mail da Escola</label><input class="fc" id="eEmail" placeholder="escola@sme.edu.br"></div>
+      </div>
+    </div>
+    <div class="m-ft">
+      <button class="btn bs" onclick="fecharM('mEscola')">Cancelar</button>
+      <button class="btn bp" onclick="submitEscola()">✓ Cadastrar Escola</button>
+    </div>
+  </div>
+</div>
+
+<!-- Novo Membro -->
+<div class="overlay" id="mMembro">
+  <div class="modal">
+    <div class="m-hd"><span class="m-ti">👥 Novo Membro TI</span><button class="m-cl" onclick="fecharM('mMembro')">✕</button></div>
+    <div class="m-bd">
+      <div class="fg"><label>Nome Completo <span class="req">*</span></label><input class="fc" id="mNome" placeholder="Nome do técnico"></div>
+      <div class="fr">
+        <div class="fg"><label>Especialidade</label>
+          <select class="fc" id="mEspec"><option>Hardware</option><option>Software / SO</option><option>Redes</option><option>Suporte Geral</option></select>
+        </div>
+        <div class="fg"><label>E-mail</label><input class="fc" id="mEmail" placeholder="tecnico@sme.edu.br"></div>
+      </div>
+      <div class="fg"><label>Telefone / WhatsApp</label><input class="fc" id="mTel" placeholder="(11) 99999-0000"></div>
+    </div>
+    <div class="m-ft">
+      <button class="btn bs" onclick="fecharM('mMembro')">Cancelar</button>
+      <button class="btn bp" onclick="submitMembro()">✓ Adicionar Membro</button>
+    </div>
+  </div>
+</div>
+
+<!-- Novo Usuário -->
+<div class="overlay" id="mUsuario">
+  <div class="modal">
+    <div class="m-hd"><span class="m-ti">🛡 Registrar Usuário no Sistema</span><button class="m-cl" onclick="fecharM('mUsuario')">✕</button></div>
+    <div class="m-bd">
+      <div style="background:var(--blue2);border:1px solid rgba(77,143,255,.3);border-radius:8px;padding:12px;margin-bottom:16px;font-size:12px;color:var(--tx2);line-height:1.6">
+        ⚠️ Crie o usuário no <strong style="color:var(--tx)">Firebase Authentication</strong> primeiro, depois cole o UID abaixo.
+      </div>
+      <div class="fg"><label>UID do Firebase Auth <span class="req">*</span></label><input class="fc" id="nuUid" placeholder="Cole o UID gerado pelo Firebase Auth"></div>
+      <div class="fg"><label>Nome Completo <span class="req">*</span></label><input class="fc" id="nuNome" placeholder="Nome completo do usuário"></div>
+      <div class="fr">
+        <div class="fg"><label>E-mail <span class="req">*</span></label><input class="fc" id="nuEmail" placeholder="usuario@sme.edu.br"></div>
+        <div class="fg"><label>Perfil de Acesso <span class="req">*</span></label>
+          <select class="fc" id="nuRole" onchange="toggleCampoEscola(this.value)">
+            <option value="visualizador">Visualizador — somente leitura</option>
+            <option value="tecnico">Técnico — abrir e editar chamados</option>
+            <option value="admin">Administrador — acesso total</option>
+            <option value="escola">Escola — portal exclusivo da unidade</option>
+          </select>
+        </div>
+      </div>
+      <div class="fg" id="campoEscolaUsuario" style="display:none">
+        <label>Unidade Escolar Vinculada <span class="req">*</span></label>
+        <select class="fc" id="nuEscolaId">
+          <option value="">— Selecione a escola —</option>
+        </select>
+        <div style="font-size:11px;color:var(--tx2);margin-top:5px">O usuário verá e abrirá chamados somente desta escola.</div>
+      </div>
+    </div>
+    <div class="m-ft">
+      <button class="btn bs" onclick="fecharM('mUsuario')">Cancelar</button>
+      <button class="btn bp" onclick="submitUsuario()">✓ Registrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Atribuir Responsável -->
+<div class="overlay" id="mAssign">
+  <div class="modal" style="width:380px">
+    <div class="m-hd"><span class="m-ti">👤 Atribuir Responsável</span><button class="m-cl" onclick="fecharM('mAssign')">✕</button></div>
+    <div class="m-bd">
+      <div class="fg"><label>Selecionar Técnico</label><select class="fc" id="assignSel"></select></div>
+    </div>
+    <div class="m-ft">
+      <button class="btn bs" onclick="fecharM('mAssign')">Cancelar</button>
+      <button class="btn bp" onclick="confirmarAssign()">✓ Atribuir</button>
+    </div>
+  </div>
+</div>
+
+<!-- Alterar Senha -->
+<div class="overlay" id="mSenha">
+  <div class="modal" style="width:400px">
+    <div class="m-hd"><span class="m-ti">🔑 Alterar Senha</span><button class="m-cl" onclick="fecharM('mSenha')">✕</button></div>
+    <div class="m-bd">
+      <div class="fg"><label>Senha Atual <span class="req">*</span></label>
+        <div class="pw"><input class="fc" id="sAtual" type="password" placeholder="Senha atual"><button class="ptog" onclick="togglePwd('sAtual',this)" type="button">👁</button></div>
+      </div>
+      <div class="fg"><label>Nova Senha <span class="req">*</span> <span style="font-size:10px;color:var(--tx3)">(mín. 8 chars, letras + números + símbolo)</span></label>
+        <div class="pw"><input class="fc" id="sNova" type="password" placeholder="Mínimo 8 caracteres" oninput="checkForca(this.value)"><button class="ptog" onclick="togglePwd('sNova',this)" type="button">👁</button></div>
+        <div class="sbar"><div class="sfill" id="sfill"></div></div>
+        <div id="slbl" style="font-size:11px;color:var(--tx2);margin-top:4px"></div>
+      </div>
+      <div class="fg"><label>Confirmar Nova Senha <span class="req">*</span></label>
+        <div class="pw"><input class="fc" id="sConf" type="password" placeholder="Repita a nova senha"><button class="ptog" onclick="togglePwd('sConf',this)" type="button">👁</button></div>
+      </div>
+    </div>
+    <div class="m-ft">
+      <button class="btn bs" onclick="fecharM('mSenha')">Cancelar</button>
+      <button class="btn bp" onclick="doChangeSenha()">✓ Alterar Senha</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-el" id="toastEl"></div>
+
+<script>
+// ════════════════════════════════════════════
+// HELPERS
+// ════════════════════════════════════════════
+const G = () => window._G;
+
+function escNome(id)  { const e = G().escolas.find(x=>x.id===id); return e?e.nome:'—'; }
+function memNome(id) {
+  if (!id) return '<span class="unass">— Não atribuído</span>';
+  const m = G().membros.find(x=>x.id===id);
+  return m?`<span class="chip"><span class="chip-av">${m.nome[0]}</span>${m.nome}</span>`:'—';
+}
+function prioBadge(p) {
+  return ({urgente:'<span class="badge b-urg">Urgente</span>',alta:'<span class="badge b-alta">Alta</span>',media:'<span class="badge b-media">Média</span>',baixa:'<span class="badge b-baixa">Baixa</span>'})[p]||p;
+}
+function stsBadge(s) {
+  return ({aberto:'<span class="badge b-open">Aberto</span>',andamento:'<span class="badge b-prog">Em Andamento</span>',concluido:'<span class="badge b-done">Concluído</span>'})[s]||s;
+}
+function roleBadge(r) {
+  return ({admin:'<span class="rb rb-admin">Admin</span>',tecnico:'<span class="rb rb-tecnico">Técnico</span>',visualizador:'<span class="rb rb-visualizador">Visualizador</span>',escola:'<span class="rb rb-escola">🏫 Escola</span>'})[r]||r;
+}
+function fmtData(ts) {
+  if (!ts) return '—';
+  try { const d = ts.toDate?ts.toDate():new Date(ts); return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); } catch { return '—'; }
+}
+
+// ════════════════════════════════════════════
+// AUTH UI
+// ════════════════════════════════════════════
+function mostrarLogin() {
+  document.getElementById('loginScreen').classList.add('on');
+  document.getElementById('topbar').style.display='none';
+  document.getElementById('mainLayout').style.display='none';
+}
+function mostrarApp() {
+  document.getElementById('loginScreen').classList.remove('on');
+  document.getElementById('topbar').style.display='flex';
+  document.getElementById('mainLayout').style.display='flex';
+  atualizarUserUI();
+  aplicarPermissoes();
+}
+function atualizarUserUI() {
+  const p = G().perfil; if(!p) return;
+  document.getElementById('uNome').textContent  = p.nome?.split(' ')[0]||'—';
+  document.getElementById('udNome').textContent = p.nome||'—';
+  document.getElementById('udEmail').textContent= p.email||G().user?.email||'—';
+  const rb = document.getElementById('uRole');
+  rb.textContent = {admin:'Admin',tecnico:'Técnico',visualizador:'Visualizador',escola:'🏫 Escola'}[p.role]||'—';
+  rb.className = `rb rb-${p.role}`;
+}
+function aplicarPermissoes() {
+  const role     = G().perfil?.role;
+  const isAdmin  = role==='admin';
+  const canWrite = isAdmin||role==='tecnico';
+  const isEsc    = role==='escola';
+
+  // perfil escola: mostra tela dedicada e esconde todo o resto
+  if (isEsc) {
+    mostrarPortalEscola();
+    return;
+  }
+  // outros perfis: layout normal
+  document.getElementById('mainLayout').style.display='flex';
+  document.getElementById('portalEscola').style.display='none';
+  ['navUsr','navLogs'].forEach(id=>{ const el=document.getElementById(id); if(el) el.style.display=isAdmin?'flex':'none'; });
+  [['btnNovoChamado',canWrite],['btnNovoChamado2',canWrite],['btnNovaEscola',canWrite],['btnNovoMembro',isAdmin]].forEach(([id,ok])=>{ const el=document.getElementById(id); if(el) el.disabled=!ok; });
+}
+
+async function doLogin() {
+  const email = document.getElementById('lEmail').value.trim();
+  const senha  = document.getElementById('lSenha').value;
+  const err   = document.getElementById('lErr');
+  const lock  = document.getElementById('lLock');
+  err.classList.remove('on'); lock.classList.remove('on');
+  if (!email||!senha) { err.textContent='Preencha e-mail e senha.'; err.classList.add('on'); return; }
+  const btn = document.getElementById('btnLogin');
+  btn.disabled=true; btn.textContent='⏳ Verificando...';
+  try {
+    await window._AUTH.login(email,senha);
+  } catch(e) {
+    btn.disabled=false; btn.textContent='🔐 Entrar';
+    if (e.message?.startsWith('BLOQUEADO:')) {
+      lock.textContent=`🔒 Muitas tentativas. Aguarde ${e.message.split(':')[1]} minuto(s).`;
+      lock.classList.add('on');
+    } else {
+      const msgs={'auth/invalid-credential':'E-mail ou senha incorretos.','auth/user-not-found':'Usuário não encontrado.','auth/wrong-password':'Senha incorreta.','auth/too-many-requests':'🔒 Conta bloqueada pelo servidor. Aguarde ou redefina sua senha.','auth/user-disabled':'Conta desativada. Contate o administrador.','auth/network-request-failed':'Erro de rede. Verifique sua conexão.'};
+      err.textContent=msgs[e.code]||'Erro ao fazer login. Tente novamente.';
+      err.classList.add('on');
+    }
+  }
+}
+
+async function doLogout() {
+  await window._AUTH.logout().catch(()=>{});
+}
+
+async function doReset() {
+  const email=document.getElementById('rEmail').value.trim();
+  const info=document.getElementById('lInfo'); const err=document.getElementById('lErr');
+  if(!email){err.textContent='Informe o e-mail.';err.classList.add('on');return;}
+  try {
+    await window._AUTH.resetSenha(email);
+    info.textContent='✓ Link enviado! Verifique sua caixa de entrada.';
+    info.classList.add('on'); err.classList.remove('on');
+    setTimeout(showLogin,4000);
+  } catch(e) { err.textContent='Erro ao enviar. Verifique o e-mail.'; err.classList.add('on'); }
+}
+
+async function doChangeSenha() {
+  const atual=document.getElementById('sAtual').value;
+  const nova =document.getElementById('sNova').value;
+  const conf =document.getElementById('sConf').value;
+  if(!atual||!nova||!conf){toast('Preencha todos os campos.','erro');return;}
+  if(nova!==conf){toast('As senhas não coincidem.','erro');return;}
+  if(nova.length<8){toast('Mínimo 8 caracteres.','erro');return;}
+  if(forcaSenha(nova)<2){toast('Senha muito fraca. Use letras, números e símbolo.','erro');return;}
+  try {
+    await window._AUTH.trocarSenha(atual,nova);
+    fecharM('mSenha');
+    ['sAtual','sNova','sConf'].forEach(id=>document.getElementById(id).value='');
+    toast('✓ Senha alterada com sucesso!','ok');
+  } catch(e) {
+    const msgs={'auth/wrong-password':'Senha atual incorreta.','auth/weak-password':'Nova senha muito fraca.','auth/requires-recent-login':'Faça login novamente antes de alterar a senha.'};
+    toast(msgs[e.code]||'Erro ao alterar senha.','erro');
+  }
+}
+
+function showReset()  { document.getElementById('formLogin').style.display='none'; document.getElementById('formReset').style.display='block'; ['lErr','lInfo','lLock'].forEach(id=>document.getElementById(id).classList.remove('on')); }
+function showLogin()  { document.getElementById('formLogin').style.display='block'; document.getElementById('formReset').style.display='none'; ['lErr','lInfo','lLock'].forEach(id=>document.getElementById(id).classList.remove('on')); }
+
+function togglePwd(id,btn) { const i=document.getElementById(id); i.type=i.type==='password'?'text':'password'; btn.textContent=i.type==='password'?'👁':'🙈'; }
+
+function forcaSenha(p) {
+  let s=0;
+  if(p.length>=8)s++; if(/[A-Z]/.test(p))s++; if(/[0-9]/.test(p))s++; if(/[^A-Za-z0-9]/.test(p))s++;
+  return s;
+}
+function checkForca(p) {
+  const s=forcaSenha(p);
+  const fill=document.getElementById('sfill'); const lbl=document.getElementById('slbl');
+  const cores=['var(--red)','var(--red)','var(--yel)','var(--blue)','var(--grn)'];
+  const labs=['','Muito fraca','Fraca','Moderada','Forte'];
+  fill.style.width=(s*25)+'%'; fill.style.background=cores[s];
+  lbl.textContent=labs[s]||''; lbl.style.color=cores[s];
+}
+
+// user menu
+function toggleUMenu() { document.getElementById('udrop').classList.toggle('on'); }
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.umenu')) document.getElementById('udrop').classList.remove('on');
+  if(!e.target.closest('#np')&&!e.target.closest('#btnNotif')) document.getElementById('np').classList.remove('on');
+});
+document.querySelectorAll('.overlay').forEach(o=>o.addEventListener('click',e=>{if(e.target===o)o.classList.remove('on')}));
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&document.getElementById('loginScreen').classList.contains('on')&&document.getElementById('formLogin').style.display!=='none')doLogin();});
+
+// ════════════════════════════════════════════
+// RENDER
+// ════════════════════════════════════════════
+function render() {
+  // perfil escola: usa portal dedicado
+  if (isEscola && isEscola()) { renderPortalEscola && renderPortalEscola(); return; }
+  const {chamados,escolas,membros,usuarios,currentFilter} = G();
+  const canWrite = perm('chamado');
+
+  // stats
+  document.getElementById('sTotal').textContent=chamados.length;
+  document.getElementById('sAnd').textContent=chamados.filter(c=>c.status==='andamento').length;
+  document.getElementById('sDone').textContent=chamados.filter(c=>c.status==='concluido').length;
+  document.getElementById('sUrg').textContent=chamados.filter(c=>c.prioridade==='urgente'&&c.status!=='concluido').length;
+
+  // nav counts
+  document.getElementById('nc-c').textContent=chamados.length;
+  document.getElementById('nc-e').textContent=escolas.length;
+  document.getElementById('nc-m').textContent=membros.length;
+  document.getElementById('nc-u').textContent=usuarios.length;
+  document.getElementById('nc-urg').textContent=chamados.filter(c=>c.prioridade==='urgente'&&c.status!=='concluido').length;
+  document.getElementById('nc-ab').textContent=chamados.filter(c=>c.status==='aberto').length;
+  document.getElementById('nc-and').textContent=chamados.filter(c=>c.status==='andamento').length;
+  document.getElementById('nc-ok').textContent=chamados.filter(c=>c.status==='concluido').length;
+
+  // notif
+  const unread=G().notifs.filter(n=>!n.read).length;
+  const nb=document.getElementById('nbc');
+  nb.textContent=unread||''; nb.className='nbc'+(unread?' on':'');
+
+  // recent
+  document.getElementById('tbRecent').innerHTML=chamados.slice(0,6).map(c=>rowShort(c)).join('')||
+    `<tr><td colspan="7"><div class="empty"><div class="empty-ico">📭</div><p>Nenhum chamado ainda</p></div></td></tr>`;
+
+  // chamados filtrados
+  let fil=chamados;
+  if(currentFilter==='urgente') fil=chamados.filter(c=>c.prioridade==='urgente'&&c.status!=='concluido');
+  else if(currentFilter!=='todos') fil=chamados.filter(c=>c.status===currentFilter);
+  document.getElementById('tbAll').innerHTML=fil.map(c=>rowFull(c)).join('')||
+    `<tr><td colspan="9"><div class="empty"><div class="empty-ico">🔍</div><p>Nenhum chamado encontrado</p></div></td></tr>`;
+
+  // escolas
+  document.getElementById('listaEscolas').innerHTML=escolas.map(e=>{
+    const calls=chamados.filter(c=>c.escolaId===e.id);
+    const ativos=calls.filter(c=>c.status!=='concluido').length;
+    const del=canWrite?`<button class="btn bd btn-xs" onclick="delEscola('${e.id}','${e.nome.replace(/'/g,"\\'")}')">✕</button>`:'';
+    return `<div class="sc">
+      <div class="sc-inf"><div class="sc-av">${e.nome[0]}</div><div><div class="sc-nm">${e.nome}</div><div class="sc-me">📍 ${e.bairro||'—'} · 👤 ${e.dir||'—'} · 📞 ${e.tel||'—'}</div></div></div>
+      <div class="sc-st">
+        <div class="sc-sv"><div class="v" style="color:var(--blue)">${ativos}</div><div class="l">Ativos</div></div>
+        <div class="sc-sv"><div class="v">${calls.length}</div><div class="l">Total</div></div>
+        <div class="sc-sv"><div class="v" style="color:var(--grn)">${calls.filter(c=>c.status==='concluido').length}</div><div class="l">Concluídos</div></div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="btn bs btn-sm" onclick="filtrarEscola('${e.id}')">Ver chamados</button>
+          ${del}
+        </div>
+      </div>
+    </div>`;
+  }).join('')||`<div class="empty"><div class="empty-ico">🏫</div><p>Nenhuma escola cadastrada</p></div>`;
+
+  // membros
+  document.getElementById('tbMembros').innerHTML=membros.map(m=>{
+    const ativos=chamados.filter(c=>c.membroId===m.id&&c.status!=='concluido').length;
+    const del=G().perfil?.role==='admin'?`<button class="btn bd btn-xs" onclick="delMembro('${m.id}','${m.nome.replace(/'/g,"\\'")}')">✕ Remover</button>`:'—';
+    return `<tr>
+      <td><div style="display:flex;align-items:center;gap:10px"><div class="mav">${m.nome[0]}</div><div><div style="font-weight:500">${m.nome}</div><div style="font-size:11px;color:var(--tx2)">${m.tel||''}</div></div></div></td>
+      <td style="font-size:12px">${m.espec}</td>
+      <td style="font-size:11px;color:var(--tx2)">${m.email||'—'}</td>
+      <td><span style="font-family:'IBM Plex Mono',monospace;color:var(--yel);font-size:13px;font-weight:600">${ativos}</span></td>
+      <td><span class="badge b-done">Ativo</span></td>
+      <td>${del}</td>
+    </tr>`;
+  }).join('')||`<tr><td colspan="6"><div class="empty"><div class="empty-ico">👥</div><p>Nenhum membro</p></div></td></tr>`;
+
+  // usuários
+  document.getElementById('tbUsuarios').innerHTML=usuarios.map(u=>{
+    const isMe=u.id===G().user?.uid;
+    const toggle=!isMe?`<button class="btn btn-xs ${u.ativo===false?'bp':'bw'}" onclick="toggleUser('${u.id}',${u.ativo===false})">${u.ativo===false?'▶ Ativar':'⏸ Desativar'}</button>`:'<span style="font-size:11px;color:var(--grn)">● você</span>';
+    return `<tr>
+      <td style="font-weight:500">${u.nome}${u.role==='escola'&&u.escolaId?`<div style="font-size:10px;color:var(--grn);margin-top:2px">🏫 ${escNome(u.escolaId)}</div>`:''}</td>
+      <td style="font-size:12px;color:var(--tx2)">${u.email||'—'}</td>
+      <td>${roleBadge(u.role)}</td>
+      <td>${u.ativo===false?'<span class="badge b-urg">Inativo</span>':'<span class="badge b-done">Ativo</span>'}</td>
+      <td class="mono">${fmtData(u.criadoEm)}</td>
+      <td>${toggle}</td>
+    </tr>`;
+  }).join('')||`<tr><td colspan="6"><div class="empty"><div class="empty-ico">🛡</div><p>Nenhum usuário</p></div></td></tr>`;
+
+  // notificações
+  document.getElementById('npList').innerHTML=G().notifs.map(n=>
+    `<div class="nit ${n.read?'':'unread'}" onclick="clickNotif('${n.id}','${n.callId||''}')">
+      <div class="nt">${n.title}</div><div class="nd">${n.desc}</div><div class="nm">${n.time}</div>
+    </div>`).join('')||`<div class="empty"><div class="empty-ico">🔔</div><p>Sem notificações</p></div>`;
+
+  // fills
+  document.getElementById('fEscola').innerHTML=escolas.map(e=>`<option value="${e.id}">${e.nome}</option>`).join('')||'<option value="">— Cadastre uma escola primeiro —</option>';
+  const nuEsc=document.getElementById('nuEscolaId');
+  if(nuEsc){ const cur=nuEsc.value; nuEsc.innerHTML='<option value="">— Selecione a escola —</option>'+escolas.map(e=>`<option value="${e.id}">${e.nome}</option>`).join(''); nuEsc.value=cur; }
+  ['fMembro','assignSel'].forEach(id=>{
+    const el=document.getElementById(id); if(!el) return;
+    el.innerHTML='<option value="">— Sem responsável —</option>'+membros.map(m=>`<option value="${m.id}">${m.nome} (${m.espec})</option>`).join('');
+  });
+
+  if (G().viewingId&&document.getElementById('dpanel').classList.contains('on')) renderDetail(G().viewingId);
+}
+
+function rowShort(c) {
+  const w=perm('chamado');
+  return `<tr>
+    <td class="mono">#${c.id.slice(-5)}</td>
+    <td style="font-size:12px;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escNome(c.escolaId)}</td>
+    <td style="font-size:12px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.desc}</td>
+    <td>${prioBadge(c.prioridade)}</td><td>${stsBadge(c.status)}</td><td>${memNome(c.membroId)}</td>
+    <td style="white-space:nowrap">
+      <button class="btn bs btn-xs" onclick="abrirDetail('${c.id}')">Ver</button>
+      ${w&&c.status!=='concluido'?`<button class="a-assign" onclick="abrirAssign('${c.id}')">👤</button>`:''}
+      ${w&&c.status==='aberto'?`<button class="a-start" onclick="updStatus('${c.id}','andamento')">▶</button>`:''}
+      ${w&&c.status==='andamento'?`<button class="a-done" onclick="updStatus('${c.id}','concluido')">✓</button>`:''}
+    </td></tr>`;
+}
+function rowFull(c) {
+  const w=perm('chamado');
+  return `<tr>
+    <td class="mono">#${c.id.slice(-5)}</td>
+    <td style="font-size:12px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escNome(c.escolaId)}</td>
+    <td style="font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.desc}</td>
+    <td style="font-size:12px">${c.categoria}</td>
+    <td>${prioBadge(c.prioridade)}</td><td>${stsBadge(c.status)}</td><td>${memNome(c.membroId)}</td>
+    <td class="mono">${fmtData(c.criadoEm)}</td>
+    <td style="white-space:nowrap">
+      <button class="btn bs btn-xs" onclick="abrirDetail('${c.id}')">Ver</button>
+      ${w&&c.status!=='concluido'?`<button class="a-assign" onclick="abrirAssign('${c.id}')">👤 Atribuir</button>`:''}
+      ${w&&c.status==='aberto'?`<button class="a-start" onclick="updStatus('${c.id}','andamento')">▶ Iniciar</button>`:''}
+      ${w&&c.status==='andamento'?`<button class="a-done" onclick="updStatus('${c.id}','concluido')">✓ Concluir</button>`:''}
+    </td></tr>`;
+}
+
+function renderDetail(id) {
+  const c=G().chamados.find(x=>x.id===id); if(!c) return;
+  const m=c.membroId?G().membros.find(x=>x.id===c.membroId):null;
+  const w=perm('chamado');
+  document.getElementById('dpTitle').textContent=`Chamado #${c.id.slice(-5)}`;
+  document.getElementById('dpBadges').innerHTML=prioBadge(c.prioridade)+' '+stsBadge(c.status);
+  document.getElementById('dpBody').innerHTML=`
+    <div class="dp-sec">
+      <div class="dp-st">Informações</div>
+      <div class="dp-row"><label>Escola</label><span>${escNome(c.escolaId)}</span></div>
+      <div class="dp-row"><label>Categoria</label><span>${c.categoria}</span></div>
+      <div class="dp-row"><label>Equipamento</label><span>${c.equip||'—'}</span></div>
+      <div class="dp-row"><label>Solicitante</label><span>${c.solicitante||'—'}</span></div>
+      <div class="dp-row"><label>Abertura</label><span class="mono">${fmtData(c.criadoEm)}</span></div>
+    </div>
+    <div class="dp-sec">
+      <div class="dp-st">Descrição</div>
+      <div class="dp-desc">${c.desc}</div>
+    </div>
+    <div class="dp-sec">
+      <div class="dp-st" style="display:flex;justify-content:space-between;align-items:center">
+        Responsável ${w&&c.status!=='concluido'?`<button class="a-assign" onclick="abrirAssign('${c.id}')">👤 Alterar</button>`:''}
+      </div>
+      <div style="margin-top:8px">${m?`<span class="chip" style="font-size:12px;padding:5px 12px"><span class="chip-av" style="width:22px;height:22px;font-size:10px">${m.nome[0]}</span>${m.nome} · ${m.espec}</span>`:'<span class="unass">Não atribuído</span>'}</div>
+    </div>
+    ${w&&c.status!=='concluido'?`<div style="display:flex;gap:8px;margin-bottom:20px">
+      ${c.status==='aberto'?`<button class="a-start" style="padding:7px 14px;font-size:12px" onclick="updStatus('${c.id}','andamento')">▶ Iniciar atendimento</button>`:''}
+      ${c.status==='andamento'?`<button class="a-done" style="padding:7px 14px;font-size:12px" onclick="updStatus('${c.id}','concluido')">✓ Marcar concluído</button>`:''}
+    </div>`:''}
+    <div class="dp-sec">
+      <div class="dp-st">Histórico</div>
+      <div class="tl">${(c.timeline||[]).map(t=>`<div class="tl-it"><div class="tl-a">${t.a}</div><div class="tl-t">${t.t}</div></div>`).join('')}</div>
+    </div>`;
+}
+
+// ════════════════════════════════════════════
+// AÇÕES
+// ════════════════════════════════════════════
+function irPagina(p,el) {
+  document.querySelectorAll('.page').forEach(x=>x.classList.remove('on'));
+  document.querySelectorAll('.nav').forEach(x=>x.classList.remove('on'));
+  document.getElementById('page-'+p).classList.add('on');
+  if(el) el.classList.add('on');
+  G().currentFilter='todos';
+  document.querySelectorAll('.flt').forEach((b,i)=>b.classList.toggle('on',i===0));
+  if(p==='logs') carregarLogs();
+  render();
+}
+function irFiltro(f,el) {
+  G().currentFilter=f; irPagina('chamados',null);
+  if(el){document.querySelectorAll('.nav').forEach(x=>x.classList.remove('on'));el.classList.add('on');}
+}
+function setFiltro(f,el) {
+  G().currentFilter=f; document.querySelectorAll('.flt').forEach(b=>b.classList.remove('on')); el.classList.add('on'); render();
+}
+function filtrarEscola(id) {
+  G().currentFilter='todos'; irPagina('chamados',null);
+  const fil=G().chamados.filter(c=>c.escolaId===id);
+  document.getElementById('tbAll').innerHTML=fil.map(c=>rowFull(c)).join('')||`<tr><td colspan="9"><div class="empty"><p>Sem chamados para esta escola</p></div></td></tr>`;
+}
+
+function abrirM(id)  { document.getElementById(id).classList.add('on'); }
+function fecharM(id) { document.getElementById(id).classList.remove('on'); }
+
+async function submitChamado() {
+  const escolaId=document.getElementById('fEscola').value;
+  const desc=document.getElementById('fDesc').value.trim();
+  if(!escolaId||!desc){toast('Preencha os campos obrigatórios.','erro');return;}
+  try {
+    const prio=document.getElementById('fPrio').value;
+    await window._DB.novoChamado({ escolaId,desc,categoria:document.getElementById('fCat').value,prioridade:prio,status:'aberto',equip:document.getElementById('fEquip').value,solicitante:document.getElementById('fSol').value,membroId:document.getElementById('fMembro').value||null });
+    G().notifs.unshift({id:Date.now().toString(),title:`Novo chamado ${prio==='urgente'?'🚨 URGENTE':'aberto'}!`,desc:escNome(escolaId),time:'agora',read:false});
+    ['fDesc','fEquip','fSol'].forEach(id=>document.getElementById(id).value='');
+    fecharM('mCall'); toast('✓ Chamado aberto!','ok');
+    if(isEscola&&isEscola()) setTimeout(renderPortalEscola,800);
+  } catch(e){toast('Erro: '+e.message,'erro');}
+}
+async function submitEscola() {
+  const nome = document.getElementById('eNome').value.trim();
+  if (!nome) { toast('Informe o nome da escola.', 'erro'); return; }
+  const btn = document.querySelector('#mEscola .bp');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvando...'; }
+  try {
+    const role = G().perfil?.role;
+    if (!role) throw new Error('Usuário sem perfil carregado. Faça logout e login novamente.');
+    if (role !== 'admin' && role !== 'tecnico') throw new Error('Seu perfil (' + role + ') não tem permissão para cadastrar escolas.');
+    const dados = {
+      nome,
+      bairro: document.getElementById('eBairro').value || '',
+      tel:    document.getElementById('eTel').value    || '',
+      dir:    document.getElementById('eDir').value    || '',
+      email:  document.getElementById('eEmail').value  || ''
+    };
+    console.log('[Escola] Salvando:', dados, '| Role:', role, '| UID:', G().user?.uid);
+    await window._DB.novaEscola(dados);
+    ['eNome','eBairro','eTel','eDir','eEmail'].forEach(id => document.getElementById(id).value = '');
+    fecharM('mEscola');
+    toast('✓ Escola cadastrada com sucesso!', 'ok');
+  } catch(e) {
+    console.error('[Escola] ERRO:', e.code, e.message, e);
+    const msg = traduzirErroFirebase(e);
+    toast(msg, 'erro');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✓ Cadastrar Escola'; }
+  }
+}
+
+async function submitMembro() {
+  const nome = document.getElementById('mNome').value.trim();
+  if (!nome) { toast('Informe o nome.', 'erro'); return; }
+  const btn = document.querySelector('#mMembro .bp');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvando...'; }
+  try {
+    const role = G().perfil?.role;
+    if (!role) throw new Error('Usuário sem perfil carregado. Faça logout e login novamente.');
+    if (role !== 'admin') throw new Error('Apenas administradores podem cadastrar membros TI. Seu perfil: ' + role);
+    const dados = {
+      nome,
+      espec: document.getElementById('mEspec').value || 'Suporte Geral',
+      email: document.getElementById('mEmail').value || '',
+      tel:   document.getElementById('mTel').value   || ''
+    };
+    console.log('[Membro] Salvando:', dados, '| Role:', role, '| UID:', G().user?.uid);
+    await window._DB.novoMembro(dados);
+    ['mNome','mEmail','mTel'].forEach(id => document.getElementById(id).value = '');
+    fecharM('mMembro');
+    toast('✓ Membro adicionado com sucesso!', 'ok');
+  } catch(e) {
+    console.error('[Membro] ERRO:', e.code, e.message, e);
+    const msg = traduzirErroFirebase(e);
+    toast(msg, 'erro');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✓ Adicionar Membro'; }
+  }
+}
+
+function traduzirErroFirebase(e) {
+  const code = e.code || '';
+  if (code === 'permission-denied' || code === 'firestore/permission-denied')
+    return '🔒 Permissão negada pelo Firestore. Verifique as Regras do banco de dados no Firebase Console.';
+  if (code === 'unavailable')
+    return '🌐 Firestore indisponível. Verifique sua conexão com a internet.';
+  if (code === 'not-found')
+    return '❌ Documento não encontrado no Firestore.';
+  if (code === 'unauthenticated')
+    return '🔑 Sessão expirada. Faça logout e login novamente.';
+  if (e.message) return e.message;
+  return 'Erro desconhecido. Abra o Console do navegador (F12) para detalhes.';
+}
+async function submitUsuario() {
+  const uid=document.getElementById('nuUid').value.trim();
+  const nome=document.getElementById('nuNome').value.trim();
+  const email=document.getElementById('nuEmail').value.trim();
+  const role=document.getElementById('nuRole').value;
+  const escolaId=document.getElementById('nuEscolaId').value;
+  if(!uid||!nome||!email){toast('Preencha todos os campos obrigatórios.','erro');return;}
+  if(role==='escola'&&!escolaId){toast('Selecione a unidade escolar para este usuário.','erro');return;}
+  const dados={uid,nome,email,role,ativo:true};
+  if(role==='escola') dados.escolaId=escolaId;
+  try {
+    await window._DB.registrarUsuario(uid,dados);
+    ['nuUid','nuNome','nuEmail'].forEach(id=>document.getElementById(id).value='');
+    document.getElementById('nuRole').value='visualizador';
+    document.getElementById('nuEscolaId').value='';
+    document.getElementById('campoEscolaUsuario').style.display='none';
+    fecharM('mUsuario'); toast('✓ Usuário registrado!','ok');
+  } catch(e){toast('Sem permissão: '+e.message,'erro');}
+}
+async function toggleUser(uid,ativar) {
+  try { await window._DB.editarUsuario(uid,{ativo:ativar}); toast(ativar?'✓ Usuário ativado':'⏸ Usuário desativado','ok'); }
+  catch(e){toast('Erro ao alterar status.','erro');}
+}
+async function updStatus(id,status) {
+  try {
+    const entry={andamento:'Status: Em andamento',concluido:'Chamado concluído por '+G().perfil?.nome}[status];
+    await window._DB.editarChamado(id,{status});
+    await window._DB.addTimeline(id,{a:entry,t:new Date().toLocaleString('pt-BR')});
+    toast(status==='concluido'?'✓ Chamado concluído!':'▶ Em andamento','ok');
+  } catch(e){toast('Sem permissão.','erro');}
+}
+function abrirAssign(id) {
+  G().assigningId=id;
+  const c=G().chamados.find(x=>x.id===id);
+  const sel=document.getElementById('assignSel');
+  sel.innerHTML='<option value="">— Sem responsável —</option>'+G().membros.map(m=>`<option value="${m.id}">${m.nome} (${m.espec})</option>`).join('');
+  if(c?.membroId) sel.value=c.membroId;
+  abrirM('mAssign');
+}
+async function confirmarAssign() {
+  const membroId=document.getElementById('assignSel').value||null;
+  const id=G().assigningId;
+  try {
+    await window._DB.editarChamado(id,{membroId});
+    const m=membroId?G().membros.find(x=>x.id===membroId):null;
+    if(m) await window._DB.addTimeline(id,{a:`Responsável: ${m.nome} (por ${G().perfil?.nome})`,t:new Date().toLocaleString('pt-BR')});
+    G().notifs.unshift({id:Date.now().toString(),title:'Chamado atribuído',desc:m?`→ ${m.nome}`:'Responsável removido',time:'agora',read:false});
+    fecharM('mAssign'); toast(m?`✓ Atribuído a ${m.nome}!`:'✓ Responsável removido','ok');
+  } catch(e){toast('Sem permissão.','erro');}
+}
+async function delEscola(id,nome) {
+  if(!confirm(`Remover escola "${nome}"?`)) return;
+  try{await window._DB.removerEscola(id);toast('Escola removida','ok');}catch(e){toast('Sem permissão.','erro');}
+}
+async function delMembro(id,nome) {
+  if(!confirm(`Remover membro "${nome}"?`)) return;
+  try{await window._DB.removerMembro(id);toast('Membro removido','ok');}catch(e){toast('Sem permissão.','erro');}
+}
+
+function abrirDetail(id) {
+  G().viewingId=id; renderDetail(id);
+  document.getElementById('dpanel').classList.add('on');
+  document.getElementById('np').classList.remove('on');
+}
+function fecharDetail() { document.getElementById('dpanel').classList.remove('on'); G().viewingId=null; }
+function toggleNotif() { document.getElementById('np').classList.toggle('on'); document.getElementById('dpanel').classList.remove('on'); }
+function markRead() { G().notifs.forEach(n=>n.read=true); render(); }
+function clickNotif(id,callId) {
+  const n=G().notifs.find(x=>x.id===id); if(n)n.read=true;
+  document.getElementById('np').classList.remove('on');
+  if(callId) setTimeout(()=>abrirDetail(callId),100);
+  render();
+}
+
+async function carregarLogs() {
+  const tb=document.getElementById('tbLogs');
+  tb.innerHTML=`<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--tx2)">Carregando logs...</td></tr>`;
+  try {
+    const logs=await window._DB.getLogs();
+    if(!logs.length){tb.innerHTML=`<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--tx3)">Nenhum log ainda</td></tr>`;return;}
+    tb.innerHTML=logs.map(l=>`<tr><td class="mono">${fmtData(l.ts)}</td><td style="font-size:12px">${l.email||l.uid||'—'}</td><td><span class="lb lb-${l.acao}">${l.acao}</span></td></tr>`).join('');
+  } catch(e){tb.innerHTML=`<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--red)">Erro ao carregar logs.</td></tr>`;}
+}
+
+function toast(msg, tipo='ok') {
+  const t=document.getElementById('toastEl');
+  t.textContent=msg; t.className=`toast-el ${tipo}`;
+  t.classList.add('on');
+  setTimeout(()=>t.classList.remove('on'),3500);
+}
+
+// expor render para o módulo Firebase
+
+// ════════════════════════════════════════════
+// PORTAL ESCOLA
+// ════════════════════════════════════════════
+let _peFiltro = 'todos';
+
+function mostrarPortalEscola() {
+  document.getElementById('mainLayout').style.display='none';
+  document.getElementById('portalEscola').style.display='flex';
+  renderPortalEscola();
+}
+
+function setPeFiltro(f, el) {
+  _peFiltro = f;
+  document.querySelectorAll('#portalEscola .flt').forEach(b=>b.classList.remove('on'));
+  if(el) el.classList.add('on');
+  renderPortalEscola();
+}
+
+function renderPortalEscola() {
+  const chamados = G().chamados; // já filtrados pelo listener (só da escola)
+  const escolas  = G().escolas;
+  const eid      = escolaDoUsuario();
+  const escola   = escolas.find(e=>e.id===eid);
+
+  // título
+  document.getElementById('pe-titulo').textContent    = escola ? '🏫 ' + escola.nome : 'Portal da Escola';
+  document.getElementById('pe-subtitulo').textContent = escola ? '📍 ' + (escola.bairro||'') + (escola.dir ? ' · Diretor(a): '+escola.dir : '') : 'Abertura e acompanhamento de chamados de TI';
+
+  // stats
+  document.getElementById('pe-total').textContent = chamados.length;
+  document.getElementById('pe-and').textContent   = chamados.filter(c=>c.status==='andamento').length;
+  document.getElementById('pe-done').textContent  = chamados.filter(c=>c.status==='concluido').length;
+
+  // notif badge (topbar)
+  const unread=G().notifs.filter(n=>!n.read).length;
+  const nb=document.getElementById('nbc');
+  nb.textContent=unread||''; nb.className='nbc'+(unread?' on':'');
+
+  // filtrar
+  let lista = chamados;
+  if (_peFiltro !== 'todos') lista = chamados.filter(c=>c.status===_peFiltro);
+
+  const lista_el = document.getElementById('pe-lista');
+
+  if (!lista.length) {
+    lista_el.innerHTML = `<div class="pe-empty"><div class="ei">📋</div><p style="font-size:13px">${_peFiltro==='todos'?'Nenhum chamado aberto ainda.<br>Clique em <strong>Abrir Chamado</strong> para solicitar atendimento.':'Nenhum chamado com este status.'}</p></div>`;
+    return;
+  }
+
+  lista_el.innerHTML = lista.map(c => {
+    const m = c.membroId ? G().membros.find(x=>x.id===c.membroId) : null;
+    const dataFmt = c.criadoEm ? (() => { try { const d=c.criadoEm.toDate?c.criadoEm.toDate():new Date(c.criadoEm); return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); } catch{return '—';} })() : '—';
+    return `<div class="pe-card" onclick="abrirPeDetalhe('${c.id}')">
+      <div class="pe-card-hd">
+        <div class="pe-card-titulo">${c.desc}</div>
+        <div style="display:flex;gap:6px;flex-shrink:0">${prioBadge(c.prioridade)} ${stsBadge(c.status)}</div>
+      </div>
+      <div class="pe-card-meta">
+        <span>🔧 ${c.categoria}</span>
+        ${c.equip?`<span>💻 ${c.equip}</span>`:''}
+        ${c.solicitante?`<span>👤 ${c.solicitante}</span>`:''}
+        <span>📅 ${dataFmt}</span>
+      </div>
+      <div class="pe-card-footer">
+        <div style="font-size:11px;color:var(--tx2)">
+          ${m ? `<span class="chip"><span class="chip-av">${m.nome[0]}</span>${m.nome}</span>` : '<span class="unass">Aguardando atribuição</span>'}
+        </div>
+        <span class="mono" style="font-size:10px">#${c.id.slice(-5)}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  // preencher select de escola no mCall com a escola do usuário (fixo)
+  const fEscola = document.getElementById('fEscola');
+  if (fEscola && escola) {
+    fEscola.innerHTML = `<option value="${escola.id}">${escola.nome}</option>`;
+    fEscola.disabled = true;
+  }
+}
+
+function abrirPeDetalhe(id) {
+  const c = G().chamados.find(x=>x.id===id); if(!c) return;
+  const m = c.membroId ? G().membros.find(x=>x.id===c.membroId) : null;
+  document.getElementById('pe-det-titulo').textContent  = `Chamado #${c.id.slice(-5)}`;
+  document.getElementById('pe-det-badges').innerHTML    = prioBadge(c.prioridade)+' '+stsBadge(c.status);
+  document.getElementById('pe-det-body').innerHTML = `
+    <div class="dp-sec">
+      <div class="dp-st">Detalhes</div>
+      <div class="dp-row"><label>Categoria</label><span>${c.categoria}</span></div>
+      <div class="dp-row"><label>Prioridade</label><span>${prioBadge(c.prioridade)}</span></div>
+      <div class="dp-row"><label>Equipamento</label><span>${c.equip||'—'}</span></div>
+      <div class="dp-row"><label>Solicitante</label><span>${c.solicitante||'—'}</span></div>
+      <div class="dp-row"><label>Abertura</label><span class="mono">${fmtData(c.criadoEm)}</span></div>
+    </div>
+    <div class="dp-sec">
+      <div class="dp-st">Descrição</div>
+      <div class="dp-desc">${c.desc}</div>
+    </div>
+    <div class="dp-sec">
+      <div class="dp-st">Técnico Responsável</div>
+      <div style="margin-top:8px">${m?`<span class="chip" style="font-size:12px;padding:5px 12px"><span class="chip-av" style="width:22px;height:22px;font-size:10px">${m.nome[0]}</span>${m.nome} · ${m.espec}</span>`:'<span class="unass">Aguardando atribuição pela equipe TI</span>'}</div>
+    </div>
+    <div class="dp-sec">
+      <div class="dp-st">Histórico</div>
+      <div class="tl">${(c.timeline||[]).map(t=>`<div class="tl-it"><div class="tl-a">${t.a}</div><div class="tl-t">${t.t}</div></div>`).join('')}</div>
+    </div>`;
+  abrirM('mPeDetalhe');
+}
+
+function toggleCampoEscola(role) {
+  const campo = document.getElementById('campoEscolaUsuario');
+  if (campo) campo.style.display = role==='escola' ? 'block' : 'none';
+}
+
+
+// ════════════════════════════════════════════
+// DIAGNÓSTICO DE CONEXÃO FIRESTORE
+// ════════════════════════════════════════════
+async function testarFirestore() {
+  const el = document.getElementById('msgDiag');
+  if (el) { el.style.display='block'; el.innerHTML='<div style="background:var(--bg3);border:1px solid var(--brd2);border-radius:8px;padding:14px;font-size:12px;color:var(--tx2)">⏳ Testando conexão com o Firestore...</div>'; }
+
+  const resultados = [];
+  const user = G().user;
+  const perfil = G().perfil;
+
+  resultados.push({ ok: !!user,   msg: user   ? `✅ Usuário autenticado: ${user.email}` : '❌ Usuário não autenticado' });
+  resultados.push({ ok: !!perfil, msg: perfil  ? `✅ Perfil carregado: role=${perfil.role}, ativo=${perfil.ativo}` : '❌ Perfil não encontrado no Firestore' });
+
+  // Teste de leitura
+  try {
+    const { getDocs: gd, collection: col, limit: lim, query: q, getFirestore: gfs, getApp } =
+      await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
+    const snap = await gd(q(col(window.__db,'escolas'), lim(1)));
+    resultados.push({ ok: true, msg: `✅ Leitura do Firestore OK (escolas: ${snap.size} doc(s) encontrado)` });
+  } catch(e) {
+    resultados.push({ ok: false, msg: `❌ Leitura falhou: ${e.code||e.message}` });
+  }
+
+  // Teste de escrita
+  try {
+    const { addDoc: ad, collection: col, deleteDoc: dd, doc: dc, serverTimestamp: st } =
+      await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
+    const ref = await ad(col(window.__db,'escolas'), { nome:'__TESTE__', criadoEm: st() });
+    await dd(dc(window.__db,'escolas', ref.id));
+    resultados.push({ ok: true, msg: '✅ Escrita no Firestore OK (documento de teste criado e removido)' });
+  } catch(e) {
+    resultados.push({ ok: false, msg: `❌ Escrita falhou: ${e.code||e.message} — ${traduzirErroFirebase(e)}` });
+  }
+
+  // Mostrar resultado
+  const html = resultados.map(r =>
+    `<div style="padding:6px 0;border-bottom:1px solid var(--brd);font-size:12px;color:${r.ok?'var(--grn)':'var(--red)'}">${r.msg}</div>`
+  ).join('');
+  const allOk = resultados.every(r => r.ok);
+
+  if (el) {
+    el.innerHTML = `<div style="background:var(--bg3);border:1px solid ${allOk?'var(--grn)':'var(--red)'};border-radius:8px;padding:14px">
+      <div style="font-weight:600;font-size:13px;margin-bottom:10px;color:${allOk?'var(--grn)':'var(--red)'}">${allOk?'✅ Tudo funcionando!':'❌ Problema detectado'}</div>
+      ${html}
+      ${!allOk ? `<div style="margin-top:12px;padding:10px;background:var(--yel2);border-radius:6px;font-size:11px;color:var(--yel);line-height:1.7">
+        <strong>Como corrigir:</strong><br>
+        1. Acesse <strong>Firebase Console → Firestore Database → Regras</strong><br>
+        2. Substitua todo o conteúdo pelo arquivo <strong>firestore.rules</strong> fornecido<br>
+        3. Clique em <strong>Publicar</strong><br>
+        4. Aguarde 1 minuto e tente novamente
+      </div>` : ''}
+      <div style="margin-top:8px"><button class="btn bs btn-sm" onclick="document.getElementById('msgDiag').style.display='none'">Fechar</button></div>
+    </div>`;
+  }
+}
+
+window.render = render;
+window.mostrarLogin = mostrarLogin;
+window.mostrarApp = mostrarApp;
+window.toast = toast;
+</script>
+
+<!-- ══ PORTAL ESCOLA (perfil escola) ══ -->
+<div id="portalEscola" style="display:none;flex-direction:column;height:calc(100vh - 54px);overflow-y:auto;background:var(--bg)">
+  <div style="padding:24px;max-width:900px;margin:0 auto;width:100%">
+    <!-- Header Portal -->
+    <div style="margin-bottom:24px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <div>
+          <div style="font-size:20px;font-weight:600" id="pe-titulo">Portal da Escola</div>
+          <div style="font-size:12px;color:var(--tx2);margin-top:3px" id="pe-subtitulo">Abertura e acompanhamento de chamados de TI</div>
+        </div>
+        <button class="btn bp" onclick="abrirM('mCall')" id="pe-btnNovo">➕ Abrir Chamado</button>
+      </div>
+    </div>
+
+    <!-- Stats escola -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">
+      <div class="stat blue"><div class="sl">Meus Chamados</div><div class="sv" id="pe-total">—</div></div>
+      <div class="stat yel"><div class="sl">Em Andamento</div><div class="sv" id="pe-and">—</div></div>
+      <div class="stat grn"><div class="sl">Concluídos</div><div class="sv" id="pe-done">—</div></div>
+    </div>
+
+    <!-- Filtros -->
+    <div class="filts" style="margin-bottom:16px">
+      <button class="flt on" onclick="setPeFiltro('todos',this)">Todos</button>
+      <button class="flt" onclick="setPeFiltro('aberto',this)">Aberto</button>
+      <button class="flt" onclick="setPeFiltro('andamento',this)">Em Andamento</button>
+      <button class="flt" onclick="setPeFiltro('concluido',this)">Concluído</button>
+    </div>
+
+    <!-- Lista de chamados da escola -->
+    <div id="pe-lista"></div>
+  </div>
+</div>
+
+<!-- Modal detalhe chamado para portal escola -->
+<div class="overlay" id="mPeDetalhe">
+  <div class="modal" style="width:540px">
+    <div class="m-hd">
+      <div>
+        <div class="m-ti" id="pe-det-titulo">Chamado</div>
+        <div style="margin-top:6px" id="pe-det-badges"></div>
+      </div>
+      <button class="m-cl" onclick="fecharM('mPeDetalhe')">✕</button>
+    </div>
+    <div class="m-bd" id="pe-det-body"></div>
+  </div>
+</div>
+
+</body>
+</html>
