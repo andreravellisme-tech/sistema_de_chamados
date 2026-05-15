@@ -115,10 +115,12 @@ window._DB = {
     const r = _G.perfil?.role;
     if (r !== 'admin' && r !== 'tecnico') throw new Error('Sem permissão: role=' + r);
     if (!db) throw new Error('Firestore não inicializado');
-    d.criadoEm = serverTimestamp();
-    console.log('[_DB.novaEscola] gravando:', d, 'uid:', _G.user?.uid, 'role:', r);
-    const ref = await addDoc(collection(db,'escolas'), d);
-    console.log('[_DB.novaEscola] sucesso, id:', ref.id);
+    // Usar Date() para evitar problemas com serverTimestamp fora de contexto
+    d.criadoEm = new Date().toISOString();
+    d.criadoPor = _G.user?.uid || '';
+    console.log('[_DB.novaEscola] gravando no Firestore:', JSON.stringify(d));
+    const ref = await addDoc(collection(db, 'escolas'), d);
+    console.log('[_DB.novaEscola] SALVO com sucesso! ID:', ref.id);
     return ref;
   },
   async removerEscola(id) {
@@ -129,10 +131,11 @@ window._DB = {
     const r = _G.perfil?.role;
     if (r !== 'admin') throw new Error('Apenas administradores podem cadastrar membros TI. Role atual: ' + r);
     if (!db) throw new Error('Firestore não inicializado');
-    d.criadoEm = serverTimestamp();
-    console.log('[_DB.novoMembro] gravando:', d, 'uid:', _G.user?.uid, 'role:', r);
-    const ref = await addDoc(collection(db,'membros'), d);
-    console.log('[_DB.novoMembro] sucesso, id:', ref.id);
+    d.criadoEm = new Date().toISOString();
+    d.criadoPor = _G.user?.uid || '';
+    console.log('[_DB.novoMembro] gravando no Firestore:', JSON.stringify(d));
+    const ref = await addDoc(collection(db, 'membros'), d);
+    console.log('[_DB.novoMembro] SALVO com sucesso! ID:', ref.id);
     return ref;
   },
   async removerMembro(id) {
@@ -1297,10 +1300,13 @@ async function submitEscola() {
       email:  document.getElementById('eEmail').value  || ''
     };
     console.log('[Escola] Salvando:', dados, '| Role:', role, '| UID:', G().user?.uid);
-    await window._DB.novaEscola(dados);
+    const refEscola = await window._DB.novaEscola(dados);
+    console.log('[submitEscola] retorno:', refEscola?.id);
     ['eNome','eBairro','eTel','eDir','eEmail'].forEach(id => document.getElementById(id).value = '');
     fecharM('mEscola');
-    toast('✓ Escola cadastrada com sucesso!', 'ok');
+    toast('✓ Escola cadastrada! ID: ' + (refEscola?.id?.slice(-5) || 'ok'), 'ok');
+    // forçar render caso listener demore
+    setTimeout(() => render && render(), 1500);
   } catch(e) {
     console.error('[Escola] ERRO:', e.code, e.message, e);
     const msg = traduzirErroFirebase(e);
@@ -1326,10 +1332,12 @@ async function submitMembro() {
       tel:   document.getElementById('mTel').value   || ''
     };
     console.log('[Membro] Salvando:', dados, '| Role:', role, '| UID:', G().user?.uid);
-    await window._DB.novoMembro(dados);
+    const refMembro = await window._DB.novoMembro(dados);
+    console.log('[submitMembro] retorno:', refMembro?.id);
     ['mNome','mEmail','mTel'].forEach(id => document.getElementById(id).value = '');
     fecharM('mMembro');
-    toast('✓ Membro adicionado com sucesso!', 'ok');
+    toast('✓ Membro adicionado! ID: ' + (refMembro?.id?.slice(-5) || 'ok'), 'ok');
+    setTimeout(() => render && render(), 1500);
   } catch(e) {
     console.error('[Membro] ERRO:', e.code, e.message, e);
     const msg = traduzirErroFirebase(e);
