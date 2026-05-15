@@ -113,18 +113,27 @@ window._DB = {
   },
   async novaEscola(d) {
     const r = _G.perfil?.role;
-    if (r !== 'admin' && r !== 'tecnico') throw new Error('Sem permissão');
+    if (r !== 'admin' && r !== 'tecnico') throw new Error('Sem permissão: role=' + r);
+    if (!db) throw new Error('Firestore não inicializado');
     d.criadoEm = serverTimestamp();
-    return addDoc(collection(db,'escolas'), d);
+    console.log('[_DB.novaEscola] gravando:', d, 'uid:', _G.user?.uid, 'role:', r);
+    const ref = await addDoc(collection(db,'escolas'), d);
+    console.log('[_DB.novaEscola] sucesso, id:', ref.id);
+    return ref;
   },
   async removerEscola(id) {
     if (_G.perfil?.role !== 'admin') throw new Error('Sem permissão');
     return deleteDoc(doc(db,'escolas',id));
   },
   async novoMembro(d) {
-    if (_G.perfil?.role !== 'admin') throw new Error('Apenas administradores podem cadastrar membros TI.');
+    const r = _G.perfil?.role;
+    if (r !== 'admin') throw new Error('Apenas administradores podem cadastrar membros TI. Role atual: ' + r);
+    if (!db) throw new Error('Firestore não inicializado');
     d.criadoEm = serverTimestamp();
-    return addDoc(collection(db,'membros'), d);
+    console.log('[_DB.novoMembro] gravando:', d, 'uid:', _G.user?.uid, 'role:', r);
+    const ref = await addDoc(collection(db,'membros'), d);
+    console.log('[_DB.novoMembro] sucesso, id:', ref.id);
+    return ref;
   },
   async removerMembro(id) {
     if (_G.perfil?.role !== 'admin') throw new Error('Sem permissão');
@@ -253,6 +262,7 @@ window.addEventListener('load', () => {
 });
 
 function agora() { return new Date().toLocaleString('pt-BR'); }
+window._firestoreDB = db;   // expõe db para uso fora do módulo
 window.render = () => {};   // será sobrescrito após DOM
 </script>
 
@@ -1558,55 +1568,73 @@ async function testarFirestore() {
   if (el) { el.style.display='block'; el.innerHTML='<div style="background:var(--bg3);border:1px solid var(--brd2);border-radius:8px;padding:14px;font-size:12px;color:var(--tx2)">⏳ Testando conexão com o Firestore...</div>'; }
 
   const resultados = [];
-  const user = G().user;
+  const user   = G().user;
   const perfil = G().perfil;
+  const fdb    = window._firestoreDB;
 
   resultados.push({ ok: !!user,   msg: user   ? `✅ Usuário autenticado: ${user.email}` : '❌ Usuário não autenticado' });
   resultados.push({ ok: !!perfil, msg: perfil  ? `✅ Perfil carregado: role=${perfil.role}, ativo=${perfil.ativo}` : '❌ Perfil não encontrado no Firestore' });
+  resultados.push({ ok: !!fdb,    msg: fdb     ? '✅ Referência ao Firestore OK' : '❌ Firestore não inicializado (recarregue a página)' });
+
+  if (!fdb) {
+    mostrarResultadoDiag(el, resultados, false);
+    return;
+  }
+
+  // Importar só as funções necessárias
+  const { collection: col, addDoc: ad, deleteDoc: dd, doc: dc,
+          getDocs: gd, query: q, limit: lim, serverTimestamp: st } =
+    await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
 
   // Teste de leitura
   try {
-    const { getDocs: gd, collection: col, limit: lim, query: q, getFirestore: gfs, getApp } =
-      await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
-    const snap = await gd(q(col(window.__db,'escolas'), lim(1)));
-    resultados.push({ ok: true, msg: `✅ Leitura do Firestore OK (escolas: ${snap.size} doc(s) encontrado)` });
+    const snap = await gd(q(col(fdb, 'escolas'), lim(1)));
+    resultados.push({ ok: true, msg: `✅ Leitura do Firestore OK` });
   } catch(e) {
-    resultados.push({ ok: false, msg: `❌ Leitura falhou: ${e.code||e.message}` });
+    resultados.push({ ok: false, msg: `❌ Leitura falhou: ${e.code || e.message}` });
   }
 
   // Teste de escrita
   try {
-    const { addDoc: ad, collection: col, deleteDoc: dd, doc: dc, serverTimestamp: st } =
-      await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
-    const ref = await ad(col(window.__db,'escolas'), { nome:'__TESTE__', criadoEm: st() });
-    await dd(dc(window.__db,'escolas', ref.id));
-    resultados.push({ ok: true, msg: '✅ Escrita no Firestore OK (documento de teste criado e removido)' });
+    const ref = await ad(col(fdb, 'escolas'), { nome: '__TESTE_DIAG__', criadoEm: st() });
+    await dd(dc(fdb, 'escolas', ref.id));
+    resultados.push({ ok: true, msg: '✅ Escrita no Firestore OK' });
   } catch(e) {
-    resultados.push({ ok: false, msg: `❌ Escrita falhou: ${e.code||e.message} — ${traduzirErroFirebase(e)}` });
+    resultados.push({ ok: false, msg: `❌ Escrita falhou: ${e.code || e.message}` });
   }
 
-  // Mostrar resultado
+  // Teste adicional via _DB interno (mesma referência usada ao salvar)
+  try {
+    const ref2 = await window._DB.novaEscola({ nome: '__TESTE_INTERNO__' });
+    // remover logo após criar
+    const { deleteDoc: dd2, doc: dc2 } =
+      await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
+    await dd2(dc2(window._firestoreDB, 'escolas', ref2.id));
+    resultados.push({ ok: true, msg: '✅ Escrita via _DB interno OK — sistema pronto para salvar!' });
+  } catch(e) {
+    resultados.push({ ok: false, msg: `❌ Escrita via _DB falhou: ${e.code || e.message}` });
+  }
+
+  mostrarResultadoDiag(el, resultados, resultados.every(r => r.ok));
+}
+
+function mostrarResultadoDiag(el, resultados, allOk) {
+  if (!el) return;
   const html = resultados.map(r =>
     `<div style="padding:6px 0;border-bottom:1px solid var(--brd);font-size:12px;color:${r.ok?'var(--grn)':'var(--red)'}">${r.msg}</div>`
   ).join('');
-  const allOk = resultados.every(r => r.ok);
-
-  if (el) {
-    el.innerHTML = `<div style="background:var(--bg3);border:1px solid ${allOk?'var(--grn)':'var(--red)'};border-radius:8px;padding:14px">
-      <div style="font-weight:600;font-size:13px;margin-bottom:10px;color:${allOk?'var(--grn)':'var(--red)'}">${allOk?'✅ Tudo funcionando!':'❌ Problema detectado'}</div>
-      ${html}
-      ${!allOk ? `<div style="margin-top:12px;padding:10px;background:var(--yel2);border-radius:6px;font-size:11px;color:var(--yel);line-height:1.7">
-        <strong>Como corrigir:</strong><br>
-        1. Acesse <strong>Firebase Console → Firestore Database → Regras</strong><br>
-        2. Substitua todo o conteúdo pelo arquivo <strong>firestore.rules</strong> fornecido<br>
-        3. Clique em <strong>Publicar</strong><br>
-        4. Aguarde 1 minuto e tente novamente
-      </div>` : ''}
-      <div style="margin-top:8px"><button class="btn bs btn-sm" onclick="document.getElementById('msgDiag').style.display='none'">Fechar</button></div>
-    </div>`;
-  }
+  el.innerHTML = `<div style="background:var(--bg3);border:1px solid ${allOk?'var(--grn)':'var(--red)'};border-radius:8px;padding:14px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:10px;color:${allOk?'var(--grn)':'var(--red)'}">${allOk?'✅ Tudo funcionando!':'❌ Problema detectado'}</div>
+    ${html}
+    ${!allOk ? `<div style="margin-top:12px;padding:10px;background:var(--yel2);border-radius:6px;font-size:11px;color:var(--yel);line-height:1.7">
+      <strong>Como corrigir regras do Firestore:</strong><br>
+      1. Acesse <strong>Firebase Console → Firestore Database → Regras</strong><br>
+      2. Substitua todo o conteúdo pelo arquivo <strong>firestore.rules</strong> fornecido<br>
+      3. Clique em <strong>Publicar</strong> e aguarde 1 minuto
+    </div>` : ''}
+    <div style="margin-top:8px"><button class="btn bs btn-sm" onclick="document.getElementById('msgDiag').style.display='none'">Fechar</button></div>
+  </div>`;
 }
-
 window.render = render;
 window.mostrarLogin = mostrarLogin;
 window.mostrarApp = mostrarApp;
