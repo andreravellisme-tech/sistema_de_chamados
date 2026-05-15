@@ -127,6 +127,22 @@ window._DB = {
     if (_G.perfil?.role !== 'admin') throw new Error('Sem permissão');
     return deleteDoc(doc(db,'escolas',id));
   },
+  async recarregarEscolas() {
+    try {
+      const snap = await getDocs(collection(db,'escolas'));
+      _G.escolas = snap.docs.map(d => ({id:d.id,...d.data()}));
+      console.log('[recarregarEscolas] lidas:', _G.escolas.length, 'escolas');
+      render();
+    } catch(e) { console.error('[recarregarEscolas] erro:', e.code, e.message); }
+  },
+  async recarregarMembros() {
+    try {
+      const snap = await getDocs(collection(db,'membros'));
+      _G.membros = snap.docs.map(d => ({id:d.id,...d.data()}));
+      console.log('[recarregarMembros] lidos:', _G.membros.length, 'membros');
+      render();
+    } catch(e) { console.error('[recarregarMembros] erro:', e.code, e.message); }
+  },
   async novoMembro(d) {
     const r = _G.perfil?.role;
     if (r !== 'admin') throw new Error('Apenas administradores podem cadastrar membros TI. Role atual: ' + r);
@@ -213,12 +229,18 @@ function iniciarListeners() {
     render();
   }));
   add(onSnapshot(collection(db,'escolas'), s => {
+    console.log('[Listener] escolas atualizado:', s.docs.length, 'docs');
     _G.escolas = s.docs.map(d => ({id:d.id,...d.data()}));
     render();
+  }, err => {
+    console.error('[Listener] ERRO escolas:', err.code, err.message);
   }));
   add(onSnapshot(collection(db,'membros'), s => {
+    console.log('[Listener] membros atualizado:', s.docs.length, 'docs');
     _G.membros = s.docs.map(d => ({id:d.id,...d.data()}));
     render();
+  }, err => {
+    console.error('[Listener] ERRO membros:', err.code, err.message);
   }));
   if (_G.perfil?.role === 'admin') {
     add(onSnapshot(collection(db,'usuarios'), s => {
@@ -1304,9 +1326,9 @@ async function submitEscola() {
     console.log('[submitEscola] retorno:', refEscola?.id);
     ['eNome','eBairro','eTel','eDir','eEmail'].forEach(id => document.getElementById(id).value = '');
     fecharM('mEscola');
-    toast('✓ Escola cadastrada! ID: ' + (refEscola?.id?.slice(-5) || 'ok'), 'ok');
-    // forçar render caso listener demore
-    setTimeout(() => render && render(), 1500);
+    toast('✓ Escola cadastrada com sucesso!', 'ok');
+    // leitura manual como fallback se listener falhar
+    await window._DB.recarregarEscolas();
   } catch(e) {
     console.error('[Escola] ERRO:', e.code, e.message, e);
     const msg = traduzirErroFirebase(e);
@@ -1336,8 +1358,9 @@ async function submitMembro() {
     console.log('[submitMembro] retorno:', refMembro?.id);
     ['mNome','mEmail','mTel'].forEach(id => document.getElementById(id).value = '');
     fecharM('mMembro');
-    toast('✓ Membro adicionado! ID: ' + (refMembro?.id?.slice(-5) || 'ok'), 'ok');
-    setTimeout(() => render && render(), 1500);
+    toast('✓ Membro adicionado com sucesso!', 'ok');
+    // leitura manual como fallback se listener falhar
+    await window._DB.recarregarMembros();
   } catch(e) {
     console.error('[Membro] ERRO:', e.code, e.message, e);
     const msg = traduzirErroFirebase(e);
@@ -1676,26 +1699,3 @@ window.toast = toast;
       <button class="flt" onclick="setPeFiltro('aberto',this)">Aberto</button>
       <button class="flt" onclick="setPeFiltro('andamento',this)">Em Andamento</button>
       <button class="flt" onclick="setPeFiltro('concluido',this)">Concluído</button>
-    </div>
-
-    <!-- Lista de chamados da escola -->
-    <div id="pe-lista"></div>
-  </div>
-</div>
-
-<!-- Modal detalhe chamado para portal escola -->
-<div class="overlay" id="mPeDetalhe">
-  <div class="modal" style="width:540px">
-    <div class="m-hd">
-      <div>
-        <div class="m-ti" id="pe-det-titulo">Chamado</div>
-        <div style="margin-top:6px" id="pe-det-badges"></div>
-      </div>
-      <button class="m-cl" onclick="fecharM('mPeDetalhe')">✕</button>
-    </div>
-    <div class="m-bd" id="pe-det-body"></div>
-  </div>
-</div>
-
-</body>
-</html>
