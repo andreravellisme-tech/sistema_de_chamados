@@ -285,6 +285,7 @@ window.addEventListener('load', () => {
 
 function agora() { return new Date().toLocaleString('pt-BR'); }
 window._firestoreDB = db;   // expõe db para uso fora do módulo
+window.carregarEscolasMembrosUsuarios = carregarEscolasMembrosUsuarios; // expõe para acesso externo
 window.render = () => {};   // será sobrescrito após DOM
 </script>
 
@@ -973,6 +974,12 @@ function mostrarApp() {
   document.getElementById('mainLayout').style.display='flex';
   atualizarUserUI();
   aplicarPermissoes();
+  // carregar dados após DOM visível
+  setTimeout(() => {
+    if (window.carregarEscolasMembrosUsuarios) {
+      window.carregarEscolasMembrosUsuarios();
+    }
+  }, 200);
 }
 function atualizarUserUI() {
   const p = G().perfil; if(!p) return;
@@ -1094,6 +1101,15 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter'&&document.getElementB
 function render() {
   // perfil escola: usa portal dedicado
   if (isEscola && isEscola()) { renderPortalEscola && renderPortalEscola(); return; }
+
+  // guard: garantir que o DOM principal está visível
+  const layoutEl = document.getElementById('mainLayout');
+  if (!layoutEl || layoutEl.style.display === 'none') {
+    console.warn('[render] mainLayout não visível ainda, aguardando...');
+    setTimeout(render, 300);
+    return;
+  }
+
   const {chamados,escolas,membros,usuarios,currentFilter} = G();
   const canWrite = perm('chamado');
 
@@ -1683,19 +1699,3 @@ window.toast = toast;
       </div>
     </div>
 
-    <!-- Stats escola -->
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">
-      <div class="stat blue"><div class="sl">Meus Chamados</div><div class="sv" id="pe-total">—</div></div>
-      <div class="stat yel"><div class="sl">Em Andamento</div><div class="sv" id="pe-and">—</div></div>
-      <div class="stat grn"><div class="sl">Concluídos</div><div class="sv" id="pe-done">—</div></div>
-    </div>
-
-    <!-- Filtros -->
-    <div class="filts" style="margin-bottom:16px">
-      <button class="flt on" onclick="setPeFiltro('todos',this)">Todos</button>
-      <button class="flt" onclick="setPeFiltro('aberto',this)">Aberto</button>
-      <button class="flt" onclick="setPeFiltro('andamento',this)">Em Andamento</button>
-      <button class="flt" onclick="setPeFiltro('concluido',this)">Concluído</button>
-    </div>
-
-    <!-- Lista de chamados da escola -->
