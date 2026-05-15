@@ -128,20 +128,10 @@ window._DB = {
     return deleteDoc(doc(db,'escolas',id));
   },
   async recarregarEscolas() {
-    try {
-      const snap = await getDocs(collection(db,'escolas'));
-      _G.escolas = snap.docs.map(d => ({id:d.id,...d.data()}));
-      console.log('[recarregarEscolas] lidas:', _G.escolas.length, 'escolas');
-      render();
-    } catch(e) { console.error('[recarregarEscolas] erro:', e.code, e.message); }
+    await carregarEscolasMembrosUsuarios();
   },
   async recarregarMembros() {
-    try {
-      const snap = await getDocs(collection(db,'membros'));
-      _G.membros = snap.docs.map(d => ({id:d.id,...d.data()}));
-      console.log('[recarregarMembros] lidos:', _G.membros.length, 'membros');
-      render();
-    } catch(e) { console.error('[recarregarMembros] erro:', e.code, e.message); }
+    await carregarEscolasMembrosUsuarios();
   },
   async novoMembro(d) {
     const r = _G.perfil?.role;
@@ -217,7 +207,28 @@ function pararListeners() {
   _G.chamados = []; _G.escolas = []; _G.membros = []; _G.usuarios = [];
 }
 
-function iniciarListeners() {
+async function carregarEscolasMembrosUsuarios() {
+  try {
+    const [snapE, snapM] = await Promise.all([
+      getDocs(collection(db, 'escolas')),
+      getDocs(collection(db, 'membros'))
+    ]);
+    _G.escolas = snapE.docs.map(d => ({id: d.id, ...d.data()}));
+    _G.membros = snapM.docs.map(d => ({id: d.id, ...d.data()}));
+    console.log('[carregarEMU] escolas:', _G.escolas.length, '| membros:', _G.membros.length);
+
+    if (_G.perfil?.role === 'admin') {
+      const snapU = await getDocs(collection(db, 'usuarios'));
+      _G.usuarios = snapU.docs.map(d => ({id: d.id, ...d.data()}));
+      console.log('[carregarEMU] usuarios:', _G.usuarios.length);
+    }
+    render();
+  } catch(e) {
+    console.error('[carregarEMU] erro:', e.code, e.message);
+  }
+}
+
+async function iniciarListeners() {
   pararListeners();
   const add = fn => _G.unsubs.push(fn);
   // perfil escola: escuta somente os chamados da própria escola
@@ -228,26 +239,12 @@ function iniciarListeners() {
     _G.chamados = s.docs.map(d => ({id:d.id,...d.data()}));
     render();
   }));
-  add(onSnapshot(collection(db,'escolas'), s => {
-    console.log('[Listener] escolas atualizado:', s.docs.length, 'docs');
-    _G.escolas = s.docs.map(d => ({id:d.id,...d.data()}));
-    render();
-  }, err => {
-    console.error('[Listener] ERRO escolas:', err.code, err.message);
-  }));
-  add(onSnapshot(collection(db,'membros'), s => {
-    console.log('[Listener] membros atualizado:', s.docs.length, 'docs');
-    _G.membros = s.docs.map(d => ({id:d.id,...d.data()}));
-    render();
-  }, err => {
-    console.error('[Listener] ERRO membros:', err.code, err.message);
-  }));
-  if (_G.perfil?.role === 'admin') {
-    add(onSnapshot(collection(db,'usuarios'), s => {
-      _G.usuarios = s.docs.map(d => ({id:d.id,...d.data()}));
-      render();
-    }));
-  }
+  // escolas, membros e usuários: leitura direta (getDocs) — mais confiável
+  await carregarEscolasMembrosUsuarios();
+
+  // re-sincronizar periodicamente (a cada 30s) para manter dados atualizados
+  const intervalo = setInterval(carregarEscolasMembrosUsuarios, 30000);
+  add(() => clearInterval(intervalo));
 }
 
 // ── Observer de autenticação ────────────────────────
@@ -1699,3 +1696,6 @@ window.toast = toast;
       <button class="flt" onclick="setPeFiltro('aberto',this)">Aberto</button>
       <button class="flt" onclick="setPeFiltro('andamento',this)">Em Andamento</button>
       <button class="flt" onclick="setPeFiltro('concluido',this)">Concluído</button>
+    </div>
+
+    <!-- Lista de chamados da escola -->
