@@ -1699,3 +1699,39 @@ window.toast = toast;
       </div>
     </div>
 
+    <!-- Stats escola -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">
+      <div class="stat blue"><div class="sl">Meus Chamados</div><div class="sv" id="pe-total">—</div></div>
+      <div class="stat yel"><div class="sl">Em Andamento</div><div class="sv" id="pe-and">—</div></div>
+      <div class="stat grn"><div class="sl">Concluídos</div><div class="sv" id="pe-done">—</div></div>
+    </div>
+
+    <!-- Filtros -->
+    <div class="filts" style="margin-bottom:16px">
+      <button class="flt on" onclick="setPeFiltro('todos',this)">Todos</button>
+      <button class="flt" onclick="setPeFiltro('aberto',this)">Aberto</button>
+      <button class="flt" onclick="setPeFiltro('andamento',this)">Em Andamento</button>
+      <button class="flt" onclick="setPeFiltro('concluido',this)">Concluído</button>
+    </div>
+
+    <!-- Lista de chamados da escola -->
+    <div id="pe-lista"></div>
+  </div>
+</div>
+
+<!-- Modal detalhe chamado para portal escola -->
+<div class="overlay" id="mPeDetalhe">
+  <div class="modal" style="width:540px">
+    <div class="m-hd">
+      <div>
+        <div class="m-ti" id="pe-det-titulo">Chamado</div>
+        <div style="margin-top:6px" id="pe-det-badges"></div>
+      </div>
+      <button class="m-cl" onclick="fecharM('mPeDetalhe')">✕</button>
+    </div>
+    <div class="m-bd" id="pe-det-body"></div>
+  </div>
+</div>
+
+</body>
+</html>
