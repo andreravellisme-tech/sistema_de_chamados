@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="X-Content-Type-Options" content="nosniff">
-<meta http-equiv="X-Frame-Options" content="DENY">
+<!-- X-Frame-Options deve ser configurado no servidor HTTP, não via meta tag -->
 <meta name="referrer" content="no-referrer">
 <title>TI Escolar · Sistema de Chamados</title>
 
@@ -1098,584 +1098,150 @@ function render() {
   // perfil escola: usa portal dedicado
   if (isEscola && isEscola()) { renderPortalEscola && renderPortalEscola(); return; }
 
-  const {chamados,escolas,membros,usuarios,currentFilter} = G();
+  const {chamados, escolas, membros, usuarios, currentFilter} = G();
   const canWrite = perm('chamado');
 
-  // stats
-  document.getElementById('sTotal').textContent=chamados.length;
-  document.getElementById('sAnd').textContent=chamados.filter(c=>c.status==='andamento').length;
-  document.getElementById('sDone').textContent=chamados.filter(c=>c.status==='concluido').length;
-  document.getElementById('sUrg').textContent=chamados.filter(c=>c.prioridade==='urgente'&&c.status!=='concluido').length;
+  // ── Stats e contadores ──────────────────────────
+  const $  = id => document.getElementById(id);
+  const $t = (id, val) => { const el = $(id); if(el) el.textContent = val; };
 
-  // nav counts
-  document.getElementById('nc-c').textContent=chamados.length;
-  document.getElementById('nc-e').textContent=escolas.length;
-  document.getElementById('nc-m').textContent=membros.length;
-  document.getElementById('nc-u').textContent=usuarios.length;
-  document.getElementById('nc-urg').textContent=chamados.filter(c=>c.prioridade==='urgente'&&c.status!=='concluido').length;
-  document.getElementById('nc-ab').textContent=chamados.filter(c=>c.status==='aberto').length;
-  document.getElementById('nc-and').textContent=chamados.filter(c=>c.status==='andamento').length;
-  document.getElementById('nc-ok').textContent=chamados.filter(c=>c.status==='concluido').length;
+  try {
+    $t('sTotal', chamados.length);
+    $t('sAnd',   chamados.filter(c=>c.status==='andamento').length);
+    $t('sDone',  chamados.filter(c=>c.status==='concluido').length);
+    $t('sUrg',   chamados.filter(c=>c.prioridade==='urgente'&&c.status!=='concluido').length);
+    $t('nc-c',   chamados.length);
+    $t('nc-e',   escolas.length);
+    $t('nc-m',   membros.length);
+    $t('nc-u',   usuarios.length);
+    $t('nc-urg', chamados.filter(c=>c.prioridade==='urgente'&&c.status!=='concluido').length);
+    $t('nc-ab',  chamados.filter(c=>c.status==='aberto').length);
+    $t('nc-and', chamados.filter(c=>c.status==='andamento').length);
+    $t('nc-ok',  chamados.filter(c=>c.status==='concluido').length);
+    const nb = $('nbc');
+    if (nb) { const u=G().notifs.filter(n=>!n.read).length; nb.textContent=u||''; nb.className='nbc'+(u?' on':''); }
+  } catch(e) { console.error('[render] stats:', e); }
 
-  // notif
-  const unread=G().notifs.filter(n=>!n.read).length;
-  const nb=document.getElementById('nbc');
-  nb.textContent=unread||''; nb.className='nbc'+(unread?' on':'');
+  // ── Chamados recentes (dashboard) ───────────────
+  try {
+    const el = $('tbRecent');
+    if (el) el.innerHTML = chamados.slice(0,6).map(c=>rowShort(c)).join('') ||
+      `<tr><td colspan="7"><div class="empty"><div class="empty-ico">📭</div><p>Nenhum chamado ainda</p></div></td></tr>`;
+  } catch(e) { console.error('[render] tbRecent:', e); }
 
-  // recent
-  document.getElementById('tbRecent').innerHTML=chamados.slice(0,6).map(c=>rowShort(c)).join('')||
-    `<tr><td colspan="7"><div class="empty"><div class="empty-ico">📭</div><p>Nenhum chamado ainda</p></div></td></tr>`;
-
-  // chamados filtrados
-  let fil=chamados;
-  if(currentFilter==='urgente') fil=chamados.filter(c=>c.prioridade==='urgente'&&c.status!=='concluido');
-  else if(currentFilter!=='todos') fil=chamados.filter(c=>c.status===currentFilter);
-  document.getElementById('tbAll').innerHTML=fil.map(c=>rowFull(c)).join('')||
-    `<tr><td colspan="9"><div class="empty"><div class="empty-ico">🔍</div><p>Nenhum chamado encontrado</p></div></td></tr>`;
-
-  // escolas
-  document.getElementById('listaEscolas').innerHTML=escolas.map(e=>{
-    const calls=chamados.filter(c=>c.escolaId===e.id);
-    const ativos=calls.filter(c=>c.status!=='concluido').length;
-    const del=canWrite?`<button class="btn bd btn-xs" onclick="delEscola('${e.id}','${e.nome.replace(/'/g,"\\'")}')">✕</button>`:'';
-    return `<div class="sc">
-      <div class="sc-inf"><div class="sc-av">${e.nome[0]}</div><div><div class="sc-nm">${e.nome}</div><div class="sc-me">📍 ${e.bairro||'—'} · 👤 ${e.dir||'—'} · 📞 ${e.tel||'—'}</div></div></div>
-      <div class="sc-st">
-        <div class="sc-sv"><div class="v" style="color:var(--blue)">${ativos}</div><div class="l">Ativos</div></div>
-        <div class="sc-sv"><div class="v">${calls.length}</div><div class="l">Total</div></div>
-        <div class="sc-sv"><div class="v" style="color:var(--grn)">${calls.filter(c=>c.status==='concluido').length}</div><div class="l">Concluídos</div></div>
-        <div style="display:flex;gap:6px;align-items:center">
-          <button class="btn bs btn-sm" onclick="filtrarEscola('${e.id}')">Ver chamados</button>
-          ${del}
-        </div>
-      </div>
-    </div>`;
-  }).join('')||`<div class="empty"><div class="empty-ico">🏫</div><p>Nenhuma escola cadastrada</p></div>`;
-
-  // membros
-  document.getElementById('tbMembros').innerHTML=membros.map(m=>{
-    const ativos=chamados.filter(c=>c.membroId===m.id&&c.status!=='concluido').length;
-    const del=G().perfil?.role==='admin'?`<button class="btn bd btn-xs" onclick="delMembro('${m.id}','${m.nome.replace(/'/g,"\\'")}')">✕ Remover</button>`:'—';
-    return `<tr>
-      <td><div style="display:flex;align-items:center;gap:10px"><div class="mav">${m.nome[0]}</div><div><div style="font-weight:500">${m.nome}</div><div style="font-size:11px;color:var(--tx2)">${m.tel||''}</div></div></div></td>
-      <td style="font-size:12px">${m.espec}</td>
-      <td style="font-size:11px;color:var(--tx2)">${m.email||'—'}</td>
-      <td><span style="font-family:'IBM Plex Mono',monospace;color:var(--yel);font-size:13px;font-weight:600">${ativos}</span></td>
-      <td><span class="badge b-done">Ativo</span></td>
-      <td>${del}</td>
-    </tr>`;
-  }).join('')||`<tr><td colspan="6"><div class="empty"><div class="empty-ico">👥</div><p>Nenhum membro</p></div></td></tr>`;
-
-  // usuários
-  document.getElementById('tbUsuarios').innerHTML=usuarios.map(u=>{
-    const isMe=u.id===G().user?.uid;
-    const toggle=!isMe?`<button class="btn btn-xs ${u.ativo===false?'bp':'bw'}" onclick="toggleUser('${u.id}',${u.ativo===false})">${u.ativo===false?'▶ Ativar':'⏸ Desativar'}</button>`:'<span style="font-size:11px;color:var(--grn)">● você</span>';
-    return `<tr>
-      <td style="font-weight:500">${u.nome}${u.role==='escola'&&u.escolaId?`<div style="font-size:10px;color:var(--grn);margin-top:2px">🏫 ${escNome(u.escolaId)}</div>`:''}</td>
-      <td style="font-size:12px;color:var(--tx2)">${u.email||'—'}</td>
-      <td>${roleBadge(u.role)}</td>
-      <td>${u.ativo===false?'<span class="badge b-urg">Inativo</span>':'<span class="badge b-done">Ativo</span>'}</td>
-      <td class="mono">${fmtData(u.criadoEm)}</td>
-      <td>${toggle}</td>
-    </tr>`;
-  }).join('')||`<tr><td colspan="6"><div class="empty"><div class="empty-ico">🛡</div><p>Nenhum usuário</p></div></td></tr>`;
-
-  // notificações
-  document.getElementById('npList').innerHTML=G().notifs.map(n=>
-    `<div class="nit ${n.read?'':'unread'}" onclick="clickNotif('${n.id}','${n.callId||''}')">
-      <div class="nt">${n.title}</div><div class="nd">${n.desc}</div><div class="nm">${n.time}</div>
-    </div>`).join('')||`<div class="empty"><div class="empty-ico">🔔</div><p>Sem notificações</p></div>`;
-
-  // fills
-  document.getElementById('fEscola').innerHTML=escolas.map(e=>`<option value="${e.id}">${e.nome}</option>`).join('')||'<option value="">— Cadastre uma escola primeiro —</option>';
-  const nuEsc=document.getElementById('nuEscolaId');
-  if(nuEsc){ const cur=nuEsc.value; nuEsc.innerHTML='<option value="">— Selecione a escola —</option>'+escolas.map(e=>`<option value="${e.id}">${e.nome}</option>`).join(''); nuEsc.value=cur; }
-  ['fMembro','assignSel'].forEach(id=>{
-    const el=document.getElementById(id); if(!el) return;
-    el.innerHTML='<option value="">— Sem responsável —</option>'+membros.map(m=>`<option value="${m.id}">${m.nome} (${m.espec})</option>`).join('');
-  });
-
-  if (G().viewingId&&document.getElementById('dpanel').classList.contains('on')) renderDetail(G().viewingId);
-}
-
-function rowShort(c) {
-  const w=perm('chamado');
-  return `<tr>
-    <td class="mono">#${c.id.slice(-5)}</td>
-    <td style="font-size:12px;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escNome(c.escolaId)}</td>
-    <td style="font-size:12px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.desc}</td>
-    <td>${prioBadge(c.prioridade)}</td><td>${stsBadge(c.status)}</td><td>${memNome(c.membroId)}</td>
-    <td style="white-space:nowrap">
-      <button class="btn bs btn-xs" onclick="abrirDetail('${c.id}')">Ver</button>
-      ${w&&c.status!=='concluido'?`<button class="a-assign" onclick="abrirAssign('${c.id}')">👤</button>`:''}
-      ${w&&c.status==='aberto'?`<button class="a-start" onclick="updStatus('${c.id}','andamento')">▶</button>`:''}
-      ${w&&c.status==='andamento'?`<button class="a-done" onclick="updStatus('${c.id}','concluido')">✓</button>`:''}
-    </td></tr>`;
-}
-function rowFull(c) {
-  const w=perm('chamado');
-  return `<tr>
-    <td class="mono">#${c.id.slice(-5)}</td>
-    <td style="font-size:12px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escNome(c.escolaId)}</td>
-    <td style="font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.desc}</td>
-    <td style="font-size:12px">${c.categoria}</td>
-    <td>${prioBadge(c.prioridade)}</td><td>${stsBadge(c.status)}</td><td>${memNome(c.membroId)}</td>
-    <td class="mono">${fmtData(c.criadoEm)}</td>
-    <td style="white-space:nowrap">
-      <button class="btn bs btn-xs" onclick="abrirDetail('${c.id}')">Ver</button>
-      ${w&&c.status!=='concluido'?`<button class="a-assign" onclick="abrirAssign('${c.id}')">👤 Atribuir</button>`:''}
-      ${w&&c.status==='aberto'?`<button class="a-start" onclick="updStatus('${c.id}','andamento')">▶ Iniciar</button>`:''}
-      ${w&&c.status==='andamento'?`<button class="a-done" onclick="updStatus('${c.id}','concluido')">✓ Concluir</button>`:''}
-    </td></tr>`;
-}
-
-function renderDetail(id) {
-  const c=G().chamados.find(x=>x.id===id); if(!c) return;
-  const m=c.membroId?G().membros.find(x=>x.id===c.membroId):null;
-  const w=perm('chamado');
-  document.getElementById('dpTitle').textContent=`Chamado #${c.id.slice(-5)}`;
-  document.getElementById('dpBadges').innerHTML=prioBadge(c.prioridade)+' '+stsBadge(c.status);
-  document.getElementById('dpBody').innerHTML=`
-    <div class="dp-sec">
-      <div class="dp-st">Informações</div>
-      <div class="dp-row"><label>Escola</label><span>${escNome(c.escolaId)}</span></div>
-      <div class="dp-row"><label>Categoria</label><span>${c.categoria}</span></div>
-      <div class="dp-row"><label>Equipamento</label><span>${c.equip||'—'}</span></div>
-      <div class="dp-row"><label>Solicitante</label><span>${c.solicitante||'—'}</span></div>
-      <div class="dp-row"><label>Abertura</label><span class="mono">${fmtData(c.criadoEm)}</span></div>
-    </div>
-    <div class="dp-sec">
-      <div class="dp-st">Descrição</div>
-      <div class="dp-desc">${c.desc}</div>
-    </div>
-    <div class="dp-sec">
-      <div class="dp-st" style="display:flex;justify-content:space-between;align-items:center">
-        Responsável ${w&&c.status!=='concluido'?`<button class="a-assign" onclick="abrirAssign('${c.id}')">👤 Alterar</button>`:''}
-      </div>
-      <div style="margin-top:8px">${m?`<span class="chip" style="font-size:12px;padding:5px 12px"><span class="chip-av" style="width:22px;height:22px;font-size:10px">${m.nome[0]}</span>${m.nome} · ${m.espec}</span>`:'<span class="unass">Não atribuído</span>'}</div>
-    </div>
-    ${w&&c.status!=='concluido'?`<div style="display:flex;gap:8px;margin-bottom:20px">
-      ${c.status==='aberto'?`<button class="a-start" style="padding:7px 14px;font-size:12px" onclick="updStatus('${c.id}','andamento')">▶ Iniciar atendimento</button>`:''}
-      ${c.status==='andamento'?`<button class="a-done" style="padding:7px 14px;font-size:12px" onclick="updStatus('${c.id}','concluido')">✓ Marcar concluído</button>`:''}
-    </div>`:''}
-    <div class="dp-sec">
-      <div class="dp-st">Histórico</div>
-      <div class="tl">${(c.timeline||[]).map(t=>`<div class="tl-it"><div class="tl-a">${t.a}</div><div class="tl-t">${t.t}</div></div>`).join('')}</div>
-    </div>`;
-}
-
-// ════════════════════════════════════════════
-// AÇÕES
-// ════════════════════════════════════════════
-function irPagina(p,el) {
-  document.querySelectorAll('.page').forEach(x=>x.classList.remove('on'));
-  document.querySelectorAll('.nav').forEach(x=>x.classList.remove('on'));
-  document.getElementById('page-'+p).classList.add('on');
-  if(el) el.classList.add('on');
-  G().currentFilter='todos';
-  document.querySelectorAll('.flt').forEach((b,i)=>b.classList.toggle('on',i===0));
-  if(p==='logs') carregarLogs();
-  // ao navegar para escolas ou membros, recarregar dados frescos do Firestore
-  if(p==='escolas'||p==='membros') {
-    if(window.carregarEscolasMembrosUsuarios) {
-      window.carregarEscolasMembrosUsuarios().then(render);
-    } else {
-      render();
+  // ── Chamados filtrados ──────────────────────────
+  try {
+    const el = $('tbAll');
+    if (el) {
+      let fil = chamados;
+      if (currentFilter==='urgente') fil = chamados.filter(c=>c.prioridade==='urgente'&&c.status!=='concluido');
+      else if (currentFilter!=='todos') fil = chamados.filter(c=>c.status===currentFilter);
+      el.innerHTML = fil.map(c=>rowFull(c)).join('') ||
+        `<tr><td colspan="9"><div class="empty"><div class="empty-ico">🔍</div><p>Nenhum chamado encontrado</p></div></td></tr>`;
     }
-  } else {
-    render();
-  }
-}
-function irFiltro(f,el) {
-  G().currentFilter=f; irPagina('chamados',null);
-  if(el){document.querySelectorAll('.nav').forEach(x=>x.classList.remove('on'));el.classList.add('on');}
-}
-function setFiltro(f,el) {
-  G().currentFilter=f; document.querySelectorAll('.flt').forEach(b=>b.classList.remove('on')); el.classList.add('on'); render();
-}
-function filtrarEscola(id) {
-  G().currentFilter='todos'; irPagina('chamados',null);
-  const fil=G().chamados.filter(c=>c.escolaId===id);
-  document.getElementById('tbAll').innerHTML=fil.map(c=>rowFull(c)).join('')||`<tr><td colspan="9"><div class="empty"><p>Sem chamados para esta escola</p></div></td></tr>`;
-}
+  } catch(e) { console.error('[render] tbAll:', e); }
 
-function abrirM(id)  { document.getElementById(id).classList.add('on'); }
-function fecharM(id) { document.getElementById(id).classList.remove('on'); }
-
-async function submitChamado() {
-  const escolaId=document.getElementById('fEscola').value;
-  const desc=document.getElementById('fDesc').value.trim();
-  if(!escolaId||!desc){toast('Preencha os campos obrigatórios.','erro');return;}
+  // ── Escolas ─────────────────────────────────────
   try {
-    const prio=document.getElementById('fPrio').value;
-    await window._DB.novoChamado({ escolaId,desc,categoria:document.getElementById('fCat').value,prioridade:prio,status:'aberto',equip:document.getElementById('fEquip').value,solicitante:document.getElementById('fSol').value,membroId:document.getElementById('fMembro').value||null });
-    G().notifs.unshift({id:Date.now().toString(),title:`Novo chamado ${prio==='urgente'?'🚨 URGENTE':'aberto'}!`,desc:escNome(escolaId),time:'agora',read:false});
-    ['fDesc','fEquip','fSol'].forEach(id=>document.getElementById(id).value='');
-    fecharM('mCall'); toast('✓ Chamado aberto!','ok');
-    if(isEscola&&isEscola()) setTimeout(renderPortalEscola,800);
-  } catch(e){toast('Erro: '+e.message,'erro');}
-}
-async function submitEscola() {
-  const nome = document.getElementById('eNome').value.trim();
-  if (!nome) { toast('Informe o nome da escola.', 'erro'); return; }
-  const btn = document.querySelector('#mEscola .bp');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvando...'; }
+    const el = $('listaEscolas');
+    if (el) {
+      el.innerHTML = escolas.map(e => {
+        const calls  = chamados.filter(c=>c.escolaId===e.id);
+        const ativos = calls.filter(c=>c.status!=='concluido').length;
+        const del    = canWrite ? `<button class="btn bd btn-xs" onclick="delEscola('${e.id}','${e.nome.replace(/'/g,"\'")}')">✕</button>` : '';
+        return `<div class="sc">
+          <div class="sc-inf">
+            <div class="sc-av">${e.nome[0]}</div>
+            <div><div class="sc-nm">${e.nome}</div><div class="sc-me">📍 ${e.bairro||'—'} · 👤 ${e.dir||'—'} · 📞 ${e.tel||'—'}</div></div>
+          </div>
+          <div class="sc-st">
+            <div class="sc-sv"><div class="v" style="color:var(--blue)">${ativos}</div><div class="l">Ativos</div></div>
+            <div class="sc-sv"><div class="v">${calls.length}</div><div class="l">Total</div></div>
+            <div class="sc-sv"><div class="v" style="color:var(--grn)">${calls.filter(c=>c.status==='concluido').length}</div><div class="l">Concluídos</div></div>
+            <div style="display:flex;gap:6px;align-items:center">
+              <button class="btn bs btn-sm" onclick="filtrarEscola('${e.id}')">Ver chamados</button>
+              ${del}
+            </div>
+          </div>
+        </div>`;
+      }).join('') || `<div class="empty"><div class="empty-ico">🏫</div><p>Nenhuma escola cadastrada</p></div>`;
+    }
+  } catch(e) { console.error('[render] listaEscolas:', e); }
+
+  // ── Membros TI ──────────────────────────────────
   try {
-    const role = G().perfil?.role;
-    if (!role) throw new Error('Usuário sem perfil carregado. Faça logout e login novamente.');
-    if (role !== 'admin' && role !== 'tecnico') throw new Error('Seu perfil (' + role + ') não tem permissão para cadastrar escolas.');
-    const dados = {
-      nome,
-      bairro: document.getElementById('eBairro').value || '',
-      tel:    document.getElementById('eTel').value    || '',
-      dir:    document.getElementById('eDir').value    || '',
-      email:  document.getElementById('eEmail').value  || ''
-    };
-    console.log('[Escola] Salvando:', dados, '| Role:', role, '| UID:', G().user?.uid);
-    const refEscola = await window._DB.novaEscola(dados);
-    console.log('[submitEscola] retorno:', refEscola?.id);
-    ['eNome','eBairro','eTel','eDir','eEmail'].forEach(id => document.getElementById(id).value = '');
-    fecharM('mEscola');
-    toast('✓ Escola cadastrada com sucesso!', 'ok');
-    // leitura manual como fallback se listener falhar
-    await window._DB.recarregarEscolas();
-  } catch(e) {
-    console.error('[Escola] ERRO:', e.code, e.message, e);
-    const msg = traduzirErroFirebase(e);
-    toast(msg, 'erro');
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '✓ Cadastrar Escola'; }
-  }
-}
+    const el = $('tbMembros');
+    if (el) {
+      el.innerHTML = membros.map(m => {
+        const ativos = chamados.filter(c=>c.membroId===m.id&&c.status!=='concluido').length;
+        const del    = G().perfil?.role==='admin'
+          ? `<button class="btn bd btn-xs" onclick="delMembro('${m.id}','${m.nome.replace(/'/g,"\'")}')">✕ Remover</button>` : '—';
+        return `<tr>
+          <td><div style="display:flex;align-items:center;gap:10px">
+            <div class="mav">${m.nome[0]}</div>
+            <div><div style="font-weight:500">${m.nome}</div><div style="font-size:11px;color:var(--tx2)">${m.tel||''}</div></div>
+          </div></td>
+          <td style="font-size:12px">${m.espec}</td>
+          <td style="font-size:11px;color:var(--tx2)">${m.email||'—'}</td>
+          <td><span style="font-family:'IBM Plex Mono',monospace;color:var(--yel);font-size:13px;font-weight:600">${ativos}</span></td>
+          <td><span class="badge b-done">Ativo</span></td>
+          <td>${del}</td>
+        </tr>`;
+      }).join('') || `<tr><td colspan="6"><div class="empty"><div class="empty-ico">👥</div><p>Nenhum membro</p></div></td></tr>`;
+    }
+  } catch(e) { console.error('[render] tbMembros:', e); }
 
-async function submitMembro() {
-  const nome = document.getElementById('mNome').value.trim();
-  if (!nome) { toast('Informe o nome.', 'erro'); return; }
-  const btn = document.querySelector('#mMembro .bp');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvando...'; }
+  // ── Usuários ────────────────────────────────────
   try {
-    const role = G().perfil?.role;
-    if (!role) throw new Error('Usuário sem perfil carregado. Faça logout e login novamente.');
-    if (role !== 'admin') throw new Error('Apenas administradores podem cadastrar membros TI. Seu perfil: ' + role);
-    const dados = {
-      nome,
-      espec: document.getElementById('mEspec').value || 'Suporte Geral',
-      email: document.getElementById('mEmail').value || '',
-      tel:   document.getElementById('mTel').value   || ''
-    };
-    console.log('[Membro] Salvando:', dados, '| Role:', role, '| UID:', G().user?.uid);
-    const refMembro = await window._DB.novoMembro(dados);
-    console.log('[submitMembro] retorno:', refMembro?.id);
-    ['mNome','mEmail','mTel'].forEach(id => document.getElementById(id).value = '');
-    fecharM('mMembro');
-    toast('✓ Membro adicionado com sucesso!', 'ok');
-    // leitura manual como fallback se listener falhar
-    await window._DB.recarregarMembros();
-  } catch(e) {
-    console.error('[Membro] ERRO:', e.code, e.message, e);
-    const msg = traduzirErroFirebase(e);
-    toast(msg, 'erro');
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '✓ Adicionar Membro'; }
-  }
-}
+    const el = $('tbUsuarios');
+    if (el) {
+      el.innerHTML = usuarios.map(u => {
+        const isMe  = u.id === G().user?.uid;
+        const toggle = !isMe
+          ? `<button class="btn btn-xs ${u.ativo===false?'bp':'bw'}" onclick="toggleUser('${u.id}',${u.ativo===false})">${u.ativo===false?'▶ Ativar':'⏸ Desativar'}</button>`
+          : '<span style="font-size:11px;color:var(--grn)">● você</span>';
+        return `<tr>
+          <td style="font-weight:500">${u.nome}${u.role==='escola'&&u.escolaId?`<div style="font-size:10px;color:var(--grn);margin-top:2px">🏫 ${escNome(u.escolaId)}</div>`:''}</td>
+          <td style="font-size:12px;color:var(--tx2)">${u.email||'—'}</td>
+          <td>${roleBadge(u.role)}</td>
+          <td>${u.ativo===false?'<span class="badge b-urg">Inativo</span>':'<span class="badge b-done">Ativo</span>'}</td>
+          <td class="mono">${fmtData(u.criadoEm)}</td>
+          <td>${toggle}</td>
+        </tr>`;
+      }).join('') || `<tr><td colspan="6"><div class="empty"><div class="empty-ico">🛡</div><p>Nenhum usuário</p></div></td></tr>`;
+    }
+  } catch(e) { console.error('[render] tbUsuarios:', e); }
 
-function traduzirErroFirebase(e) {
-  const code = e.code || '';
-  if (code === 'permission-denied' || code === 'firestore/permission-denied')
-    return '🔒 Permissão negada pelo Firestore. Verifique as Regras do banco de dados no Firebase Console.';
-  if (code === 'unavailable')
-    return '🌐 Firestore indisponível. Verifique sua conexão com a internet.';
-  if (code === 'not-found')
-    return '❌ Documento não encontrado no Firestore.';
-  if (code === 'unauthenticated')
-    return '🔑 Sessão expirada. Faça logout e login novamente.';
-  if (e.message) return e.message;
-  return 'Erro desconhecido. Abra o Console do navegador (F12) para detalhes.';
-}
-async function submitUsuario() {
-  const uid=document.getElementById('nuUid').value.trim();
-  const nome=document.getElementById('nuNome').value.trim();
-  const email=document.getElementById('nuEmail').value.trim();
-  const role=document.getElementById('nuRole').value;
-  const escolaId=document.getElementById('nuEscolaId').value;
-  if(!uid||!nome||!email){toast('Preencha todos os campos obrigatórios.','erro');return;}
-  if(role==='escola'&&!escolaId){toast('Selecione a unidade escolar para este usuário.','erro');return;}
-  const dados={uid,nome,email,role,ativo:true};
-  if(role==='escola') dados.escolaId=escolaId;
+  // ── Notificações ────────────────────────────────
   try {
-    await window._DB.registrarUsuario(uid,dados);
-    ['nuUid','nuNome','nuEmail'].forEach(id=>document.getElementById(id).value='');
-    document.getElementById('nuRole').value='visualizador';
-    document.getElementById('nuEscolaId').value='';
-    document.getElementById('campoEscolaUsuario').style.display='none';
-    fecharM('mUsuario'); toast('✓ Usuário registrado!','ok');
-  } catch(e){toast('Sem permissão: '+e.message,'erro');}
-}
-async function toggleUser(uid,ativar) {
-  try { await window._DB.editarUsuario(uid,{ativo:ativar}); toast(ativar?'✓ Usuário ativado':'⏸ Usuário desativado','ok'); }
-  catch(e){toast('Erro ao alterar status.','erro');}
-}
-async function updStatus(id,status) {
+    const el = $('npList');
+    if (el) {
+      el.innerHTML = G().notifs.map(n =>
+        `<div class="nit ${n.read?'':'unread'}" onclick="clickNotif('${n.id}','${n.callId||''}')">
+          <div class="nt">${n.title}</div><div class="nd">${n.desc}</div><div class="nm">${n.time}</div>
+        </div>`).join('') || `<div class="empty"><div class="empty-ico">🔔</div><p>Sem notificações</p></div>`;
+    }
+  } catch(e) { console.error('[render] npList:', e); }
+
+  // ── Preencher selects ───────────────────────────
   try {
-    const entry={andamento:'Status: Em andamento',concluido:'Chamado concluído por '+G().perfil?.nome}[status];
-    await window._DB.editarChamado(id,{status});
-    await window._DB.addTimeline(id,{a:entry,t:new Date().toLocaleString('pt-BR')});
-    toast(status==='concluido'?'✓ Chamado concluído!':'▶ Em andamento','ok');
-  } catch(e){toast('Sem permissão.','erro');}
-}
-function abrirAssign(id) {
-  G().assigningId=id;
-  const c=G().chamados.find(x=>x.id===id);
-  const sel=document.getElementById('assignSel');
-  sel.innerHTML='<option value="">— Sem responsável —</option>'+G().membros.map(m=>`<option value="${m.id}">${m.nome} (${m.espec})</option>`).join('');
-  if(c?.membroId) sel.value=c.membroId;
-  abrirM('mAssign');
-}
-async function confirmarAssign() {
-  const membroId=document.getElementById('assignSel').value||null;
-  const id=G().assigningId;
+    const fEsc = $('fEscola');
+    if (fEsc) fEsc.innerHTML = escolas.map(e=>`<option value="${e.id}">${e.nome}</option>`).join('') || '<option value="">— Cadastre uma escola primeiro —</option>';
+    const nuEsc = $('nuEscolaId');
+    if (nuEsc) { const cur=nuEsc.value; nuEsc.innerHTML='<option value="">— Selecione a escola —</option>'+escolas.map(e=>`<option value="${e.id}">${e.nome}</option>`).join(''); nuEsc.value=cur; }
+    ['fMembro','assignSel'].forEach(id => {
+      const el = $(id); if (!el) return;
+      el.innerHTML = '<option value="">— Sem responsável —</option>' + membros.map(m=>`<option value="${m.id}">${m.nome} (${m.espec})</option>`).join('');
+    });
+  } catch(e) { console.error('[render] selects:', e); }
+
+  // ── Detalhe aberto ──────────────────────────────
   try {
-    await window._DB.editarChamado(id,{membroId});
-    const m=membroId?G().membros.find(x=>x.id===membroId):null;
-    if(m) await window._DB.addTimeline(id,{a:`Responsável: ${m.nome} (por ${G().perfil?.nome})`,t:new Date().toLocaleString('pt-BR')});
-    G().notifs.unshift({id:Date.now().toString(),title:'Chamado atribuído',desc:m?`→ ${m.nome}`:'Responsável removido',time:'agora',read:false});
-    fecharM('mAssign'); toast(m?`✓ Atribuído a ${m.nome}!`:'✓ Responsável removido','ok');
-  } catch(e){toast('Sem permissão.','erro');}
-}
-async function delEscola(id,nome) {
-  if(!confirm(`Remover escola "${nome}"?`)) return;
-  try{await window._DB.removerEscola(id);toast('Escola removida','ok');}catch(e){toast('Sem permissão.','erro');}
-}
-async function delMembro(id,nome) {
-  if(!confirm(`Remover membro "${nome}"?`)) return;
-  try{await window._DB.removerMembro(id);toast('Membro removido','ok');}catch(e){toast('Sem permissão.','erro');}
-}
-
-function abrirDetail(id) {
-  G().viewingId=id; renderDetail(id);
-  document.getElementById('dpanel').classList.add('on');
-  document.getElementById('np').classList.remove('on');
-}
-function fecharDetail() { document.getElementById('dpanel').classList.remove('on'); G().viewingId=null; }
-function toggleNotif() { document.getElementById('np').classList.toggle('on'); document.getElementById('dpanel').classList.remove('on'); }
-function markRead() { G().notifs.forEach(n=>n.read=true); render(); }
-function clickNotif(id,callId) {
-  const n=G().notifs.find(x=>x.id===id); if(n)n.read=true;
-  document.getElementById('np').classList.remove('on');
-  if(callId) setTimeout(()=>abrirDetail(callId),100);
-  render();
-}
-
-async function carregarLogs() {
-  const tb=document.getElementById('tbLogs');
-  tb.innerHTML=`<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--tx2)">Carregando logs...</td></tr>`;
-  try {
-    const logs=await window._DB.getLogs();
-    if(!logs.length){tb.innerHTML=`<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--tx3)">Nenhum log ainda</td></tr>`;return;}
-    tb.innerHTML=logs.map(l=>`<tr><td class="mono">${fmtData(l.ts)}</td><td style="font-size:12px">${l.email||l.uid||'—'}</td><td><span class="lb lb-${l.acao}">${l.acao}</span></td></tr>`).join('');
-  } catch(e){tb.innerHTML=`<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--red)">Erro ao carregar logs.</td></tr>`;}
-}
-
-function toast(msg, tipo='ok') {
-  const t=document.getElementById('toastEl');
-  t.textContent=msg; t.className=`toast-el ${tipo}`;
-  t.classList.add('on');
-  setTimeout(()=>t.classList.remove('on'),3500);
-}
-
-// expor render para o módulo Firebase
-
-// ════════════════════════════════════════════
-// PORTAL ESCOLA
-// ════════════════════════════════════════════
-let _peFiltro = 'todos';
-
-function mostrarPortalEscola() {
-  document.getElementById('mainLayout').style.display='none';
-  document.getElementById('portalEscola').style.display='flex';
-  renderPortalEscola();
-}
-
-function setPeFiltro(f, el) {
-  _peFiltro = f;
-  document.querySelectorAll('#portalEscola .flt').forEach(b=>b.classList.remove('on'));
-  if(el) el.classList.add('on');
-  renderPortalEscola();
-}
-
-function renderPortalEscola() {
-  const chamados = G().chamados; // já filtrados pelo listener (só da escola)
-  const escolas  = G().escolas;
-  const eid      = escolaDoUsuario();
-  const escola   = escolas.find(e=>e.id===eid);
-
-  // título
-  document.getElementById('pe-titulo').textContent    = escola ? '🏫 ' + escola.nome : 'Portal da Escola';
-  document.getElementById('pe-subtitulo').textContent = escola ? '📍 ' + (escola.bairro||'') + (escola.dir ? ' · Diretor(a): '+escola.dir : '') : 'Abertura e acompanhamento de chamados de TI';
-
-  // stats
-  document.getElementById('pe-total').textContent = chamados.length;
-  document.getElementById('pe-and').textContent   = chamados.filter(c=>c.status==='andamento').length;
-  document.getElementById('pe-done').textContent  = chamados.filter(c=>c.status==='concluido').length;
-
-  // notif badge (topbar)
-  const unread=G().notifs.filter(n=>!n.read).length;
-  const nb=document.getElementById('nbc');
-  nb.textContent=unread||''; nb.className='nbc'+(unread?' on':'');
-
-  // filtrar
-  let lista = chamados;
-  if (_peFiltro !== 'todos') lista = chamados.filter(c=>c.status===_peFiltro);
-
-  const lista_el = document.getElementById('pe-lista');
-
-  if (!lista.length) {
-    lista_el.innerHTML = `<div class="pe-empty"><div class="ei">📋</div><p style="font-size:13px">${_peFiltro==='todos'?'Nenhum chamado aberto ainda.<br>Clique em <strong>Abrir Chamado</strong> para solicitar atendimento.':'Nenhum chamado com este status.'}</p></div>`;
-    return;
-  }
-
-  lista_el.innerHTML = lista.map(c => {
-    const m = c.membroId ? G().membros.find(x=>x.id===c.membroId) : null;
-    const dataFmt = c.criadoEm ? (() => { try { const d=c.criadoEm.toDate?c.criadoEm.toDate():new Date(c.criadoEm); return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); } catch{return '—';} })() : '—';
-    return `<div class="pe-card" onclick="abrirPeDetalhe('${c.id}')">
-      <div class="pe-card-hd">
-        <div class="pe-card-titulo">${c.desc}</div>
-        <div style="display:flex;gap:6px;flex-shrink:0">${prioBadge(c.prioridade)} ${stsBadge(c.status)}</div>
-      </div>
-      <div class="pe-card-meta">
-        <span>🔧 ${c.categoria}</span>
-        ${c.equip?`<span>💻 ${c.equip}</span>`:''}
-        ${c.solicitante?`<span>👤 ${c.solicitante}</span>`:''}
-        <span>📅 ${dataFmt}</span>
-      </div>
-      <div class="pe-card-footer">
-        <div style="font-size:11px;color:var(--tx2)">
-          ${m ? `<span class="chip"><span class="chip-av">${m.nome[0]}</span>${m.nome}</span>` : '<span class="unass">Aguardando atribuição</span>'}
-        </div>
-        <span class="mono" style="font-size:10px">#${c.id.slice(-5)}</span>
-      </div>
-    </div>`;
-  }).join('');
-
-  // preencher select de escola no mCall com a escola do usuário (fixo)
-  const fEscola = document.getElementById('fEscola');
-  if (fEscola && escola) {
-    fEscola.innerHTML = `<option value="${escola.id}">${escola.nome}</option>`;
-    fEscola.disabled = true;
-  }
-}
-
-function abrirPeDetalhe(id) {
-  const c = G().chamados.find(x=>x.id===id); if(!c) return;
-  const m = c.membroId ? G().membros.find(x=>x.id===c.membroId) : null;
-  document.getElementById('pe-det-titulo').textContent  = `Chamado #${c.id.slice(-5)}`;
-  document.getElementById('pe-det-badges').innerHTML    = prioBadge(c.prioridade)+' '+stsBadge(c.status);
-  document.getElementById('pe-det-body').innerHTML = `
-    <div class="dp-sec">
-      <div class="dp-st">Detalhes</div>
-      <div class="dp-row"><label>Categoria</label><span>${c.categoria}</span></div>
-      <div class="dp-row"><label>Prioridade</label><span>${prioBadge(c.prioridade)}</span></div>
-      <div class="dp-row"><label>Equipamento</label><span>${c.equip||'—'}</span></div>
-      <div class="dp-row"><label>Solicitante</label><span>${c.solicitante||'—'}</span></div>
-      <div class="dp-row"><label>Abertura</label><span class="mono">${fmtData(c.criadoEm)}</span></div>
-    </div>
-    <div class="dp-sec">
-      <div class="dp-st">Descrição</div>
-      <div class="dp-desc">${c.desc}</div>
-    </div>
-    <div class="dp-sec">
-      <div class="dp-st">Técnico Responsável</div>
-      <div style="margin-top:8px">${m?`<span class="chip" style="font-size:12px;padding:5px 12px"><span class="chip-av" style="width:22px;height:22px;font-size:10px">${m.nome[0]}</span>${m.nome} · ${m.espec}</span>`:'<span class="unass">Aguardando atribuição pela equipe TI</span>'}</div>
-    </div>
-    <div class="dp-sec">
-      <div class="dp-st">Histórico</div>
-      <div class="tl">${(c.timeline||[]).map(t=>`<div class="tl-it"><div class="tl-a">${t.a}</div><div class="tl-t">${t.t}</div></div>`).join('')}</div>
-    </div>`;
-  abrirM('mPeDetalhe');
-}
-
-function toggleCampoEscola(role) {
-  const campo = document.getElementById('campoEscolaUsuario');
-  if (campo) campo.style.display = role==='escola' ? 'block' : 'none';
+    if (G().viewingId && $('dpanel')?.classList.contains('on')) renderDetail(G().viewingId);
+  } catch(e) { console.error('[render] detail:', e); }
 }
 
 
-// ════════════════════════════════════════════
-// DIAGNÓSTICO DE CONEXÃO FIRESTORE
-// ════════════════════════════════════════════
-async function testarFirestore() {
-  const el = document.getElementById('msgDiag');
-  if (el) { el.style.display='block'; el.innerHTML='<div style="background:var(--bg3);border:1px solid var(--brd2);border-radius:8px;padding:14px;font-size:12px;color:var(--tx2)">⏳ Testando conexão com o Firestore...</div>'; }
-
-  const resultados = [];
-  const user   = G().user;
-  const perfil = G().perfil;
-  const fdb    = window._firestoreDB;
-
-  resultados.push({ ok: !!user,   msg: user   ? `✅ Usuário autenticado: ${user.email}` : '❌ Usuário não autenticado' });
-  resultados.push({ ok: !!perfil, msg: perfil  ? `✅ Perfil carregado: role=${perfil.role}, ativo=${perfil.ativo}` : '❌ Perfil não encontrado no Firestore' });
-  resultados.push({ ok: !!fdb,    msg: fdb     ? '✅ Referência ao Firestore OK' : '❌ Firestore não inicializado (recarregue a página)' });
-
-  if (!fdb) {
-    mostrarResultadoDiag(el, resultados, false);
-    return;
-  }
-
-  // Importar só as funções necessárias
-  const { collection: col, addDoc: ad, deleteDoc: dd, doc: dc,
-          getDocs: gd, query: q, limit: lim, serverTimestamp: st } =
-    await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
-
-  // Teste de leitura
-  try {
-    const snap = await gd(q(col(fdb, 'escolas'), lim(1)));
-    resultados.push({ ok: true, msg: `✅ Leitura do Firestore OK` });
-  } catch(e) {
-    resultados.push({ ok: false, msg: `❌ Leitura falhou: ${e.code || e.message}` });
-  }
-
-  // Teste de escrita
-  try {
-    const ref = await ad(col(fdb, 'escolas'), { nome: '__TESTE_DIAG__', criadoEm: st() });
-    await dd(dc(fdb, 'escolas', ref.id));
-    resultados.push({ ok: true, msg: '✅ Escrita no Firestore OK' });
-  } catch(e) {
-    resultados.push({ ok: false, msg: `❌ Escrita falhou: ${e.code || e.message}` });
-  }
-
-  // Teste adicional via _DB interno (mesma referência usada ao salvar)
-  try {
-    const ref2 = await window._DB.novaEscola({ nome: '__TESTE_INTERNO__' });
-    // remover logo após criar
-    const { deleteDoc: dd2, doc: dc2 } =
-      await import('https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js');
-    await dd2(dc2(window._firestoreDB, 'escolas', ref2.id));
-    resultados.push({ ok: true, msg: '✅ Escrita via _DB interno OK — sistema pronto para salvar!' });
-  } catch(e) {
-    resultados.push({ ok: false, msg: `❌ Escrita via _DB falhou: ${e.code || e.message}` });
-  }
-
-  mostrarResultadoDiag(el, resultados, resultados.every(r => r.ok));
-}
-
-function mostrarResultadoDiag(el, resultados, allOk) {
-  if (!el) return;
-  const html = resultados.map(r =>
-    `<div style="padding:6px 0;border-bottom:1px solid var(--brd);font-size:12px;color:${r.ok?'var(--grn)':'var(--red)'}">${r.msg}</div>`
-  ).join('');
-  el.innerHTML = `<div style="background:var(--bg3);border:1px solid ${allOk?'var(--grn)':'var(--red)'};border-radius:8px;padding:14px">
-    <div style="font-weight:600;font-size:13px;margin-bottom:10px;color:${allOk?'var(--grn)':'var(--red)'}">${allOk?'✅ Tudo funcionando!':'❌ Problema detectado'}</div>
-    ${html}
-    ${!allOk ? `<div style="margin-top:12px;padding:10px;background:var(--yel2);border-radius:6px;font-size:11px;color:var(--yel);line-height:1.7">
-      <strong>Como corrigir regras do Firestore:</strong><br>
-      1. Acesse <strong>Firebase Console → Firestore Database → Regras</strong><br>
-      2. Substitua todo o conteúdo pelo arquivo <strong>firestore.rules</strong> fornecido<br>
-      3. Clique em <strong>Publicar</strong> e aguarde 1 minuto
-    </div>` : ''}
-    <div style="margin-top:8px"><button class="btn bs btn-sm" onclick="document.getElementById('msgDiag').style.display='none'">Fechar</button></div>
-  </div>`;
-}
 window.render = render;
 window.mostrarLogin = mostrarLogin;
 window.mostrarApp = mostrarApp;
