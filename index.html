@@ -267,8 +267,9 @@ onAuthStateChanged(auth, async user => {
     }
     _G.user   = user;
     _G.perfil = perfil;
-    iniciarListeners();
-    mostrarApp();
+    mostrarApp();                        // mostra layout primeiro
+    await iniciarListeners();            // DEPOIS carrega dados com await
+    render();                            // renderiza com dados prontos
   } else {
     _G.user = null; _G.perfil = null;
     pararListeners();
@@ -974,12 +975,7 @@ function mostrarApp() {
   document.getElementById('mainLayout').style.display='flex';
   atualizarUserUI();
   aplicarPermissoes();
-  // carregar dados após DOM visível
-  setTimeout(() => {
-    if (window.carregarEscolasMembrosUsuarios) {
-      window.carregarEscolasMembrosUsuarios();
-    }
-  }, 200);
+  const {chamados,escolas,membros,usuarios,currentFilter} = G();
 }
 function atualizarUserUI() {
   const p = G().perfil; if(!p) return;
@@ -1101,14 +1097,6 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter'&&document.getElementB
 function render() {
   // perfil escola: usa portal dedicado
   if (isEscola && isEscola()) { renderPortalEscola && renderPortalEscola(); return; }
-
-  // guard: garantir que o DOM principal está visível
-  const layoutEl = document.getElementById('mainLayout');
-  if (!layoutEl || layoutEl.style.display === 'none') {
-    console.warn('[render] mainLayout não visível ainda, aguardando...');
-    setTimeout(render, 300);
-    return;
-  }
 
   const {chamados,escolas,membros,usuarios,currentFilter} = G();
   const canWrite = perm('chamado');
@@ -1287,7 +1275,16 @@ function irPagina(p,el) {
   G().currentFilter='todos';
   document.querySelectorAll('.flt').forEach((b,i)=>b.classList.toggle('on',i===0));
   if(p==='logs') carregarLogs();
-  render();
+  // ao navegar para escolas ou membros, recarregar dados frescos do Firestore
+  if(p==='escolas'||p==='membros') {
+    if(window.carregarEscolasMembrosUsuarios) {
+      window.carregarEscolasMembrosUsuarios().then(render);
+    } else {
+      render();
+    }
+  } else {
+    render();
+  }
 }
 function irFiltro(f,el) {
   G().currentFilter=f; irPagina('chamados',null);
