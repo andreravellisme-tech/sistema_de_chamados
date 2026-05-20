@@ -288,6 +288,7 @@ function agora() { return new Date().toLocaleString('pt-BR'); }
 window._firestoreDB = db;   // expõe db para uso fora do módulo
 window.carregarEscolasMembrosUsuarios = carregarEscolasMembrosUsuarios; // expõe para acesso externo
 window.render = () => {};   // será sobrescrito após DOM
+window.irPagina        = irPagina;         
 </script>
 
 <style>
