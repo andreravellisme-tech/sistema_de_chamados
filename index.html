@@ -8,6 +8,47 @@
 <meta name="referrer" content="no-referrer">
 <title>TI Escolar · Sistema de Chamados</title>
 
+<script>
+// ── Proxy global para onclick antes do módulo carregar ──────────
+// Qualquer função chamada via onclick é enfileirada e executada
+// assim que o módulo Firebase terminar de inicializar.
+window._ready = false;
+window._queue = [];
+
+function _dispatch(fn, args) {
+  if (window._ready && window[fn]) {
+    window[fn].apply(null, args);
+  } else {
+    window._queue.push([fn, args]);
+  }
+}
+
+// Funções proxy — delegam para a função real quando pronta
+['irPagina','irFiltro','setFiltro','filtrarEscola',
+ 'abrirM','fecharM','abrirDetail','fecharDetail',
+ 'toggleNotif','markRead','clickNotif',
+ 'toggleUMenu','togglePwd','showReset','showLogin',
+ 'doLogin','doLogout','doReset','doChangeSenha',
+ 'submitChamado','submitEscola','submitMembro','submitUsuario',
+ 'confirmarAssign','abrirAssign','updStatus',
+ 'delEscola','delMembro','toggleUser',
+ 'testarFirestore','setPeFiltro','abrirPeDetalhe',
+ 'toggleCampoEscola','carregarLogs'
+].forEach(function(fn) {
+  window[fn] = function() {
+    _dispatch(fn, Array.prototype.slice.call(arguments));
+  };
+});
+
+// Chamada quando o módulo terminar — executa fila
+window._modulePronto = function() {
+  window._ready = true;
+  window._queue.forEach(function(item) {
+    if (window[item[0]]) window[item[0]].apply(null, item[1]);
+  });
+  window._queue = [];
+};
+</script>
 <script type="module">
 import { initializeApp }   from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
 import { getFirestore, collection, addDoc, updateDoc, deleteDoc,
@@ -287,7 +328,7 @@ window.addEventListener('load', () => {
 function agora() { return new Date().toLocaleString('pt-BR'); }
 window._firestoreDB = db;   // expõe db para uso fora do módulo
 window.carregarEscolasMembrosUsuarios = carregarEscolasMembrosUsuarios; // expõe para acesso externo
-window.render = () => {};   // será sobrescrito após DOM 
+window.render = () => {};   // será sobrescrito após DOM
 </script>
 
 <style>
@@ -1243,6 +1284,7 @@ function render() {
 
 
 // ── Expor TODAS as funções usadas em onclick= para o escopo global ──
+// Sobrescrever os proxies com as funções reais
 window.render          = render;
 window.mostrarLogin    = mostrarLogin;
 window.mostrarApp      = mostrarApp;
@@ -1283,6 +1325,9 @@ window.abrirPeDetalhe  = abrirPeDetalhe;
 window.toggleCampoEscola = toggleCampoEscola;
 window.carregarLogs    = carregarLogs;
 window.renderDetail    = renderDetail;
+
+// Sinalizar que o módulo está pronto — executa fila de onclick pendentes
+window._modulePronto && window._modulePronto();
 </script>
 
 <!-- ══ PORTAL ESCOLA (perfil escola) ══ -->
