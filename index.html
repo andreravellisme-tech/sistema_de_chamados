@@ -1242,10 +1242,47 @@ function render() {
 }
 
 
-window.render = render;
-window.mostrarLogin = mostrarLogin;
-window.mostrarApp = mostrarApp;
-window.toast = toast;
+// ── Expor TODAS as funções usadas em onclick= para o escopo global ──
+window.render          = render;
+window.mostrarLogin    = mostrarLogin;
+window.mostrarApp      = mostrarApp;
+window.toast           = toast;
+window.irPagina        = irPagina;
+window.irFiltro        = irFiltro;
+window.setFiltro       = setFiltro;
+window.filtrarEscola   = filtrarEscola;
+window.abrirM          = abrirM;
+window.fecharM         = fecharM;
+window.openDetail      = abrirDetail;
+window.abrirDetail     = abrirDetail;
+window.fecharDetail    = fecharDetail;
+window.toggleNotif     = toggleNotif;
+window.markRead        = markRead;
+window.clickNotif      = clickNotif;
+window.toggleUMenu     = toggleUMenu;
+window.togglePwd       = togglePwd;
+window.showReset       = showReset;
+window.showLogin       = showLogin;
+window.doLogin         = doLogin;
+window.doLogout        = doLogout;
+window.doReset         = doReset;
+window.doChangeSenha   = doChangeSenha;
+window.submitChamado   = submitChamado;
+window.submitEscola    = submitEscola;
+window.submitMembro    = submitMembro;
+window.submitUsuario   = submitUsuario;
+window.confirmarAssign = confirmarAssign;
+window.abrirAssign     = abrirAssign;
+window.updStatus       = updStatus;
+window.delEscola       = delEscola;
+window.delMembro       = delMembro;
+window.toggleUser      = toggleUser;
+window.testarFirestore = testarFirestore;
+window.setPeFiltro     = setPeFiltro;
+window.abrirPeDetalhe  = abrirPeDetalhe;
+window.toggleCampoEscola = toggleCampoEscola;
+window.carregarLogs    = carregarLogs;
+window.renderDetail    = renderDetail;
 </script>
 
 <!-- ══ PORTAL ESCOLA (perfil escola) ══ -->
