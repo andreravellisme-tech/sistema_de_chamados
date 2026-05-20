@@ -288,28 +288,6 @@ function agora() { return new Date().toLocaleString('pt-BR'); }
 window._firestoreDB = db;   // expõe db para uso fora do módulo
 window.carregarEscolasMembrosUsuarios = carregarEscolasMembrosUsuarios; // expõe para acesso externo
 window.render = () => {};   // será sobrescrito após DOM 
-         // ════════════════════════════════════════════════════
-// 🌍 EXPOSIÇÃO SEGURA DE FUNÇÕES PARA O HTML (onclick)
-// ════════════════════════════════════════════════════
-const funcoesGlobais = [
-  'irPagina', 'abrirM', 'fecharM', 'doLogin', 'togglePwd', 
-  'setFiltro', 'setPeFiltro', 'submitUsuario', 'confirmarAssign', 
-  'toggleUser', 'verChamado', 'salvarChamado', 'salvarEscola', 
-  'salvarMembro', 'excluirEscola', 'excluirMembro', 'mudarStatus', 
-  'adicionarComentario', 'aplicarPermissoes', 'mostrarPortalEscola'
-];
-
-funcoesGlobais.forEach(nomeFn => {
-  try {
-    // Avalia dinamicamente se a função existe no escopo do módulo e expõe-na
-    const fn = eval(nomeFn);
-    if (typeof fn === 'function') {
-      window[nomeFn] = fn;
-    }
-  } catch (e) {
-    // Ignora silenciosamente caso a função não exista ou tenha outro nome
-  }
-});
 </script>
 
 <style>
