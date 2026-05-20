@@ -287,7 +287,24 @@ window.addEventListener('load', () => {
 function agora() { return new Date().toLocaleString('pt-BR'); }
 window._firestoreDB = db;   // expõe db para uso fora do módulo
 window.carregarEscolasMembrosUsuarios = carregarEscolasMembrosUsuarios; // expõe para acesso externo
-window.render = () => {};   // será sobrescrito após DOM        
+window.render = () => {};   // será sobrescrito após DOM 
+
+         // ══════════════════════════════════════════════════════════════════════
+// 🛠️ CORREÇÃO: EXSTANDO FUNÇÕES PARA O ESCOPO GLOBAL (HTML)
+// ══════════════════════════════════════════════════════════════════════
+window.irPagina = irPagina;
+window.abrirM = abrirM;
+window.fecharM = fecharM;
+window.setPeFiltro = setPeFiltro;
+
+// Caso o seu HTML chame outras funções nos botões, estas linhas garantem que não darão erro:
+if (typeof setFiltro !== 'undefined') window.setFiltro = setFiltro;
+if (typeof salvarChamado !== 'undefined') window.salvarChamado = salvarChamado;
+if (typeof submitUsuario !== 'undefined') window.submitUsuario = submitUsuario;
+if (typeof toggleUser !== 'undefined') window.toggleUser = toggleUser;
+if (typeof submitEscola !== 'undefined') window.submitEscola = submitEscola;
+if (typeof submitMembro !== 'undefined') window.submitMembro = submitMembro;
+// ══════════════════════════════════════════════════════════════════════
 </script>
 
 <style>
