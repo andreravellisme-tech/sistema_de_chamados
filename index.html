@@ -1535,355 +1535,395 @@ select.fc option{background:var(--bg2)}
 <div class="toast-el" id="toastEl"></div>
 
 <script>
-// ════════════════════════════════════════════
-// HELPERS
-// ════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════
+// FUNÇÕES DE AÇÃO — navegação, modais, submit, etc.
+// ════════════════════════════════════════════════════════
+
 const G = () => window._G;
 
-function escNome(id)  { const e = G().escolas.find(x=>x.id===id); return e?e.nome:'—'; }
-function memNome(id) {
-  if (!id) return '<span class="unass">— Não atribuído</span>';
-  const m = G().membros.find(x=>x.id===id);
-  return m?`<span class="chip"><span class="chip-av">${m.nome[0]}</span>${m.nome}</span>`:'—';
-}
-function prioBadge(p) {
-  return ({urgente:'<span class="badge b-urg">Urgente</span>',alta:'<span class="badge b-alta">Alta</span>',media:'<span class="badge b-media">Média</span>',baixa:'<span class="badge b-baixa">Baixa</span>'})[p]||p;
-}
-function stsBadge(s) {
-  return ({aberto:'<span class="badge b-open">Aberto</span>',andamento:'<span class="badge b-prog">Em Andamento</span>',concluido:'<span class="badge b-done">Concluído</span>'})[s]||s;
-}
-function roleBadge(r) {
-  return ({admin:'<span class="rb rb-admin">Admin</span>',tecnico:'<span class="rb rb-tecnico">Técnico</span>',visualizador:'<span class="rb rb-visualizador">Visualizador</span>',escola:'<span class="rb rb-escola">🏫 Escola</span>'})[r]||r;
-}
-function fmtData(ts) {
-  if (!ts) return '—';
-  try { const d = ts.toDate?ts.toDate():new Date(ts); return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); } catch { return '—'; }
+function toast(msg, tipo) {
+  tipo = tipo || 'ok';
+  const t = document.getElementById('toastEl');
+  if (!t) return;
+  t.textContent = msg;
+  t.className = 'toast-el ' + tipo;
+  t.classList.add('on');
+  setTimeout(() => t.classList.remove('on'), 3500);
 }
 
-// ════════════════════════════════════════════
-// AUTH UI
-// ════════════════════════════════════════════
-function mostrarLogin() {
-  document.getElementById('loginScreen').classList.add('on');
-  document.getElementById('topbar').style.display='none';
-  document.getElementById('mainLayout').style.display='none';
+function traduzirErroFirebase(e) {
+  const c = e.code || '';
+  if (c === 'permission-denied' || c === 'firestore/permission-denied')
+    return '🔒 Permissão negada. Verifique as Regras do Firestore no Firebase Console.';
+  if (c === 'unavailable')   return '🌐 Firestore indisponível. Verifique sua conexão.';
+  if (c === 'unauthenticated') return '🔑 Sessão expirada. Faça login novamente.';
+  if (e.message) return e.message;
+  return 'Erro desconhecido. Abra o Console (F12) para detalhes.';
 }
-function mostrarApp() {
-  document.getElementById('loginScreen').classList.remove('on');
-  document.getElementById('topbar').style.display='flex';
-  document.getElementById('mainLayout').style.display='flex';
-  atualizarUserUI();
-  aplicarPermissoes();
-  const {chamados,escolas,membros,usuarios,currentFilter} = G();
-}
-function atualizarUserUI() {
-  const p = G().perfil; if(!p) return;
-  document.getElementById('uNome').textContent  = p.nome?.split(' ')[0]||'—';
-  document.getElementById('udNome').textContent = p.nome||'—';
-  document.getElementById('udEmail').textContent= p.email||G().user?.email||'—';
-  const rb = document.getElementById('uRole');
-  rb.textContent = {admin:'Admin',tecnico:'Técnico',visualizador:'Visualizador',escola:'🏫 Escola'}[p.role]||'—';
-  rb.className = `rb rb-${p.role}`;
-}
-function aplicarPermissoes() {
-  const role     = G().perfil?.role;
-  const isAdmin  = role==='admin';
-  const canWrite = isAdmin||role==='tecnico';
-  const isEsc    = role==='escola';
 
-  // perfil escola: mostra tela dedicada e esconde todo o resto
-  if (isEsc) {
-    mostrarPortalEscola();
+// ── Navegação ─────────────────────────────────────────
+function irPagina(p, el) {
+  document.querySelectorAll('.page').forEach(x => x.classList.remove('on'));
+  document.querySelectorAll('.nav').forEach(x => x.classList.remove('on'));
+  const page = document.getElementById('page-' + p);
+  if (page) page.classList.add('on');
+  if (el) el.classList.add('on');
+  G().currentFilter = 'todos';
+  document.querySelectorAll('.flt').forEach((b, i) => b.classList.toggle('on', i === 0));
+  if (p === 'logs') carregarLogs();
+  if (p === 'escolas' || p === 'membros') {
+    carregarEscolasMembrosUsuarios().then(() => render());
+  } else {
+    render();
+  }
+}
+
+function irFiltro(f, el) {
+  G().currentFilter = f;
+  irPagina('chamados', null);
+  if (el) { document.querySelectorAll('.nav').forEach(x => x.classList.remove('on')); el.classList.add('on'); }
+}
+
+function setFiltro(f, el) {
+  G().currentFilter = f;
+  document.querySelectorAll('.flt').forEach(b => b.classList.remove('on'));
+  if (el) el.classList.add('on');
+  render();
+}
+
+function filtrarEscola(id) {
+  G().currentFilter = 'todos';
+  irPagina('chamados', null);
+  const fil = G().chamados.filter(c => c.escolaId === id);
+  const el = document.getElementById('tbAll');
+  if (el) el.innerHTML = fil.map(c => rowFull(c)).join('') ||
+    '<tr><td colspan="9"><div class="empty"><p>Sem chamados para esta escola</p></div></td></tr>';
+}
+
+// ── Modais ────────────────────────────────────────────
+function abrirM(id)  { const el = document.getElementById(id); if (el) el.classList.add('on'); }
+function fecharM(id) { const el = document.getElementById(id); if (el) el.classList.remove('on'); }
+
+// ── Painel de detalhes ────────────────────────────────
+function abrirDetail(id) {
+  G().viewingId = id;
+  renderDetail(id);
+  const dp = document.getElementById('dpanel'); if (dp) dp.classList.add('on');
+  const np = document.getElementById('np'); if (np) np.classList.remove('on');
+}
+function fecharDetail() {
+  const dp = document.getElementById('dpanel'); if (dp) dp.classList.remove('on');
+  G().viewingId = null;
+}
+
+// ── Notificações ──────────────────────────────────────
+function toggleNotif() {
+  const np = document.getElementById('np'); if (np) np.classList.toggle('on');
+  const dp = document.getElementById('dpanel'); if (dp) dp.classList.remove('on');
+}
+function markRead() { G().notifs.forEach(n => n.read = true); render(); }
+function clickNotif(id, callId) {
+  const n = G().notifs.find(x => x.id === id); if (n) n.read = true;
+  const np = document.getElementById('np'); if (np) np.classList.remove('on');
+  if (callId) setTimeout(() => abrirDetail(callId), 100);
+  render();
+}
+
+// ── Submits ───────────────────────────────────────────
+async function submitChamado() {
+  const escolaId = document.getElementById('fEscola').value;
+  const desc = document.getElementById('fDesc').value.trim();
+  if (!escolaId || !desc) { toast('Preencha os campos obrigatórios.', 'erro'); return; }
+  try {
+    const prio = document.getElementById('fPrio').value;
+    await window._DB.novoChamado({
+      escolaId, desc,
+      categoria:   document.getElementById('fCat').value,
+      prioridade:  prio,
+      status:      'aberto',
+      equip:       document.getElementById('fEquip').value,
+      solicitante: document.getElementById('fSol').value,
+      membroId:    document.getElementById('fMembro').value || null
+    });
+    G().notifs.unshift({ id: Date.now().toString(), title: 'Novo chamado ' + (prio === 'urgente' ? '🚨 URGENTE' : 'aberto') + '!', desc: escNome(escolaId), time: 'agora', read: false });
+    ['fDesc','fEquip','fSol'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    fecharM('mCall');
+    toast('✓ Chamado aberto com sucesso!', 'ok');
+    if (isEscola && isEscola()) setTimeout(() => renderPortalEscola && renderPortalEscola(), 800);
+  } catch(e) { toast(traduzirErroFirebase(e), 'erro'); }
+}
+
+async function submitEscola() {
+  const nome = document.getElementById('eNome').value.trim();
+  if (!nome) { toast('Informe o nome da escola.', 'erro'); return; }
+  try {
+    await window._DB.novaEscola({
+      nome,
+      bairro: document.getElementById('eBairro').value || '',
+      tel:    document.getElementById('eTel').value    || '',
+      dir:    document.getElementById('eDir').value    || '',
+      email:  document.getElementById('eEmail').value  || ''
+    });
+    ['eNome','eBairro','eTel','eDir','eEmail'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    fecharM('mEscola');
+    toast('✓ Escola cadastrada com sucesso!', 'ok');
+    await window._DB.recarregarEscolas();
+  } catch(e) { toast(traduzirErroFirebase(e), 'erro'); }
+}
+
+async function submitMembro() {
+  const nome = document.getElementById('mNome').value.trim();
+  if (!nome) { toast('Informe o nome.', 'erro'); return; }
+  try {
+    await window._DB.novoMembro({
+      nome,
+      espec: document.getElementById('mEspec').value || 'Suporte Geral',
+      email: document.getElementById('mEmail').value || '',
+      tel:   document.getElementById('mTel').value   || ''
+    });
+    ['mNome','mEmail','mTel'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    fecharM('mMembro');
+    toast('✓ Membro adicionado com sucesso!', 'ok');
+    await window._DB.recarregarMembros();
+  } catch(e) { toast(traduzirErroFirebase(e), 'erro'); }
+}
+
+async function submitUsuario() {
+  const uid   = document.getElementById('nuUid').value.trim();
+  const nome  = document.getElementById('nuNome').value.trim();
+  const email = document.getElementById('nuEmail').value.trim();
+  const role  = document.getElementById('nuRole').value;
+  const escolaId = document.getElementById('nuEscolaId') ? document.getElementById('nuEscolaId').value : '';
+  if (!uid || !nome || !email) { toast('Preencha todos os campos obrigatórios.', 'erro'); return; }
+  if (role === 'escola' && !escolaId) { toast('Selecione a unidade escolar para este usuário.', 'erro'); return; }
+  const dados = { uid, nome, email, role, ativo: true };
+  if (role === 'escola') dados.escolaId = escolaId;
+  try {
+    await window._DB.registrarUsuario(uid, dados);
+    ['nuUid','nuNome','nuEmail'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    const nr = document.getElementById('nuRole'); if (nr) nr.value = 'visualizador';
+    const ne = document.getElementById('nuEscolaId'); if (ne) ne.value = '';
+    const ce = document.getElementById('campoEscolaUsuario'); if (ce) ce.style.display = 'none';
+    fecharM('mUsuario');
+    toast('✓ Usuário registrado!', 'ok');
+    await carregarEscolasMembrosUsuarios();
+  } catch(e) { toast(traduzirErroFirebase(e), 'erro'); }
+}
+
+// ── Atribuir / Status ─────────────────────────────────
+function abrirAssign(id) {
+  G().assigningId = id;
+  const c = G().chamados.find(x => x.id === id);
+  const sel = document.getElementById('assignSel');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— Sem responsável —</option>' +
+    G().membros.map(m => '<option value="' + m.id + '">' + m.nome + ' (' + m.espec + ')</option>').join('');
+  if (c && c.membroId) sel.value = c.membroId;
+  abrirM('mAssign');
+}
+
+async function confirmarAssign() {
+  const membroId = document.getElementById('assignSel').value || null;
+  const id = G().assigningId;
+  try {
+    await window._DB.editarChamado(id, { membroId });
+    const m = membroId ? G().membros.find(x => x.id === membroId) : null;
+    if (m) await window._DB.addTimeline(id, { a: 'Responsável: ' + m.nome + ' (por ' + (G().perfil?.nome||'admin') + ')', t: new Date().toLocaleString('pt-BR') });
+    G().notifs.unshift({ id: Date.now().toString(), title: 'Chamado atribuído', desc: m ? '→ ' + m.nome : 'Responsável removido', time: 'agora', read: false });
+    fecharM('mAssign');
+    toast(m ? '✓ Atribuído a ' + m.nome + '!' : '✓ Responsável removido', 'ok');
+  } catch(e) { toast(traduzirErroFirebase(e), 'erro'); }
+}
+
+async function updStatus(id, status) {
+  try {
+    const labels = { andamento: 'Status: Em andamento', concluido: 'Chamado concluído por ' + (G().perfil?.nome || 'admin') };
+    await window._DB.editarChamado(id, { status });
+    await window._DB.addTimeline(id, { a: labels[status] || status, t: new Date().toLocaleString('pt-BR') });
+    toast(status === 'concluido' ? '✓ Chamado concluído!' : '▶ Em andamento', 'ok');
+  } catch(e) { toast(traduzirErroFirebase(e), 'erro'); }
+}
+
+async function delEscola(id, nome) {
+  if (!confirm('Remover escola "' + nome + '"?')) return;
+  try { await window._DB.removerEscola(id); toast('Escola removida', 'ok'); await window._DB.recarregarEscolas(); }
+  catch(e) { toast(traduzirErroFirebase(e), 'erro'); }
+}
+
+async function delMembro(id, nome) {
+  if (!confirm('Remover membro "' + nome + '"?')) return;
+  try { await window._DB.removerMembro(id); toast('Membro removido', 'ok'); await window._DB.recarregarMembros(); }
+  catch(e) { toast(traduzirErroFirebase(e), 'erro'); }
+}
+
+async function toggleUser(uid, ativar) {
+  try { await window._DB.editarUsuario(uid, { ativo: ativar }); toast(ativar ? '✓ Usuário ativado' : '⏸ Usuário desativado', 'ok'); await carregarEscolasMembrosUsuarios(); }
+  catch(e) { toast(traduzirErroFirebase(e), 'erro'); }
+}
+
+// ── Diagnóstico ───────────────────────────────────────
+async function testarFirestore() {
+  const el = document.getElementById('msgDiag');
+  if (el) { el.style.display = 'block'; el.innerHTML = '<div style="background:var(--bg3);border:1px solid var(--brd2);border-radius:8px;padding:14px;font-size:12px;color:var(--tx2)">⏳ Testando conexão...</div>'; }
+  const res = [];
+  const u = G().user, p = G().perfil;
+  res.push({ ok: !!u,  msg: u ? '✅ Usuário autenticado: ' + u.email : '❌ Não autenticado' });
+  res.push({ ok: !!p,  msg: p ? '✅ Perfil: role=' + p.role + ', ativo=' + p.ativo : '❌ Perfil não encontrado' });
+  try {
+    await db.collection('escolas').limit(1).get();
+    res.push({ ok: true, msg: '✅ Leitura OK' });
+  } catch(e) { res.push({ ok: false, msg: '❌ Leitura falhou: ' + (e.code || e.message) }); }
+  try {
+    const ref = await db.collection('escolas').add({ nome: '__TESTE__', criadoEm: new Date().toISOString() });
+    await db.collection('escolas').doc(ref.id).delete();
+    res.push({ ok: true, msg: '✅ Escrita OK — sistema pronto para salvar!' });
+  } catch(e) { res.push({ ok: false, msg: '❌ Escrita falhou: ' + (e.code || e.message) }); }
+  const ok = res.every(r => r.ok);
+  const html = res.map(r => '<div style="padding:6px 0;border-bottom:1px solid var(--brd);font-size:12px;color:' + (r.ok ? 'var(--grn)' : 'var(--red)') + '">' + r.msg + '</div>').join('');
+  if (el) el.innerHTML = '<div style="background:var(--bg3);border:1px solid ' + (ok ? 'var(--grn)' : 'var(--red)') + ';border-radius:8px;padding:14px"><div style="font-weight:600;font-size:13px;margin-bottom:10px;color:' + (ok ? 'var(--grn)' : 'var(--red)') + '">' + (ok ? '✅ Tudo funcionando!' : '❌ Problema detectado') + '</div>' + html + '<div style="margin-top:8px"><button class="btn bs btn-sm" onclick="document.getElementById('msgDiag').style.display='none'">Fechar</button></div></div>';
+}
+
+// ── Logs ──────────────────────────────────────────────
+async function carregarLogs() {
+  const tb = document.getElementById('tbLogs'); if (!tb) return;
+  tb.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--tx2)">Carregando...</td></tr>';
+  try {
+    const logs = await window._DB.getLogs();
+    if (!logs.length) { tb.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--tx3)">Nenhum log</td></tr>'; return; }
+    tb.innerHTML = logs.map(l => '<tr><td class="mono">' + fmtData(l.ts) + '</td><td style="font-size:12px">' + (l.email||l.uid||'—') + '</td><td><span class="lb lb-' + l.acao + '">' + l.acao + '</span></td></tr>').join('');
+  } catch(e) { tb.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--red)">Erro ao carregar.</td></tr>'; }
+}
+
+// ── Portal Escola ─────────────────────────────────────
+let _peFiltro = 'todos';
+function setPeFiltro(f, el) {
+  _peFiltro = f;
+  document.querySelectorAll('#portalEscola .flt').forEach(b => b.classList.remove('on'));
+  if (el) el.classList.add('on');
+  renderPortalEscola();
+}
+function abrirPeDetalhe(id) {
+  const c = G().chamados.find(x => x.id === id); if (!c) return;
+  const m = c.membroId ? G().membros.find(x => x.id === c.membroId) : null;
+  const tEl = document.getElementById('pe-det-titulo');
+  const bEl = document.getElementById('pe-det-badges');
+  const bdEl = document.getElementById('pe-det-body');
+  if (tEl) tEl.textContent = 'Chamado #' + c.id.slice(-5);
+  if (bEl) bEl.innerHTML  = prioBadge(c.prioridade) + ' ' + stsBadge(c.status);
+  if (bdEl) bdEl.innerHTML = '<div class="dp-sec"><div class="dp-st">Detalhes</div>' +
+    '<div class="dp-row"><label>Categoria</label><span>' + c.categoria + '</span></div>' +
+    '<div class="dp-row"><label>Equipamento</label><span>' + (c.equip||'—') + '</span></div>' +
+    '<div class="dp-row"><label>Solicitante</label><span>' + (c.solicitante||'—') + '</span></div>' +
+    '<div class="dp-row"><label>Abertura</label><span class="mono">' + fmtData(c.criadoEm) + '</span></div></div>' +
+    '<div class="dp-sec"><div class="dp-st">Descrição</div><div class="dp-desc">' + c.desc + '</div></div>' +
+    '<div class="dp-sec"><div class="dp-st">Técnico</div><div style="margin-top:8px">' +
+    (m ? '<span class="chip"><span class="chip-av">' + m.nome[0] + '</span>' + m.nome + ' · ' + m.espec + '</span>' : '<span class="unass">Aguardando atribuição</span>') +
+    '</div></div>' +
+    '<div class="dp-sec"><div class="dp-st">Histórico</div><div class="tl">' +
+    (c.timeline||[]).map(t => '<div class="tl-it"><div class="tl-a">' + t.a + '</div><div class="tl-t">' + t.t + '</div></div>').join('') +
+    '</div></div>';
+  abrirM('mPeDetalhe');
+}
+function toggleCampoEscola(role) {
+  const el = document.getElementById('campoEscolaUsuario');
+  if (el) el.style.display = role === 'escola' ? 'block' : 'none';
+}
+
+// ── Eventos globais ───────────────────────────────────
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.umenu')) { const d = document.getElementById('udrop'); if(d) d.classList.remove('on'); }
+  if (!e.target.closest('#np') && !e.target.closest('#btnNotif')) { const n = document.getElementById('np'); if(n) n.classList.remove('on'); }
+});
+document.querySelectorAll('.overlay').forEach(function(o) {
+  o.addEventListener('click', function(e) { if (e.target === o) o.classList.remove('on'); });
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    const ls = document.getElementById('loginScreen');
+    const fl = document.getElementById('formLogin');
+    if (ls && ls.classList.contains('on') && fl && fl.style.display !== 'none') doLogin();
+  }
+});
+
+
+// ── renderDetail ─────────────────────────────────────
+function renderDetail(id) {
+  const c = G().chamados.find(x => x.id === id); if (!c) return;
+  const m = c.membroId ? G().membros.find(x => x.id === c.membroId) : null;
+  const w = perm('chamado');
+  const tEl = document.getElementById('dpTitle');
+  const bEl = document.getElementById('dpBadges');
+  const bdEl = document.getElementById('dpBody');
+  if (tEl) tEl.textContent = 'Chamado #' + c.id.slice(-5);
+  if (bEl) bEl.innerHTML = prioBadge(c.prioridade) + ' ' + stsBadge(c.status);
+  if (!bdEl) return;
+  bdEl.innerHTML = '<div class="dp-sec"><div class="dp-st">Informações</div>' +
+    '<div class="dp-row"><label>Escola</label><span>' + escNome(c.escolaId) + '</span></div>' +
+    '<div class="dp-row"><label>Categoria</label><span>' + c.categoria + '</span></div>' +
+    '<div class="dp-row"><label>Equipamento</label><span>' + (c.equip||'—') + '</span></div>' +
+    '<div class="dp-row"><label>Solicitante</label><span>' + (c.solicitante||'—') + '</span></div>' +
+    '<div class="dp-row"><label>Abertura</label><span class="mono">' + fmtData(c.criadoEm) + '</span></div></div>' +
+    '<div class="dp-sec"><div class="dp-st">Descrição</div><div class="dp-desc">' + c.desc + '</div></div>' +
+    '<div class="dp-sec"><div class="dp-st" style="display:flex;justify-content:space-between;align-items:center">Responsável ' +
+    (w && c.status !== 'concluido' ? '<button class="a-assign" onclick="abrirAssign('' + c.id + '')">👤 Alterar</button>' : '') +
+    '</div><div style="margin-top:8px">' +
+    (m ? '<span class="chip" style="font-size:12px;padding:5px 12px"><span class="chip-av" style="width:22px;height:22px;font-size:10px">' + m.nome[0] + '</span>' + m.nome + ' · ' + m.espec + '</span>' : '<span class="unass">Não atribuído</span>') +
+    '</div></div>' +
+    (w && c.status !== 'concluido' ? '<div style="display:flex;gap:8px;margin-bottom:20px">' +
+    (c.status === 'aberto' ? '<button class="a-start" style="padding:7px 14px;font-size:12px" onclick="updStatus('' + c.id + '','andamento')">▶ Iniciar</button>' : '') +
+    (c.status === 'andamento' ? '<button class="a-done" style="padding:7px 14px;font-size:12px" onclick="updStatus('' + c.id + '','concluido')">✓ Concluído</button>' : '') +
+    '</div>' : '') +
+    '<div class="dp-sec"><div class="dp-st">Histórico</div><div class="tl">' +
+    (c.timeline||[]).map(t => '<div class="tl-it"><div class="tl-a">' + t.a + '</div><div class="tl-t">' + t.t + '</div></div>').join('') +
+    '</div></div>';
+}
+
+// ── renderPortalEscola ────────────────────────────────
+function mostrarPortalEscola() {
+  const ml = document.getElementById('mainLayout'); if (ml) ml.style.display = 'none';
+  const pe = document.getElementById('portalEscola'); if (pe) pe.style.display = 'flex';
+  renderPortalEscola();
+}
+
+function renderPortalEscola() {
+  const chamados = G().chamados;
+  const eid = escolaDoUsuario();
+  const escola = G().escolas.find(e => e.id === eid);
+  const tEl = document.getElementById('pe-titulo');
+  const sEl = document.getElementById('pe-subtitulo');
+  if (tEl) tEl.textContent = escola ? '🏫 ' + escola.nome : 'Portal da Escola';
+  if (sEl) sEl.textContent = escola ? (escola.bairro || '') + (escola.dir ? ' · Diretor(a): ' + escola.dir : '') : '';
+  const peTotal = document.getElementById('pe-total'); if (peTotal) peTotal.textContent = chamados.length;
+  const peAnd   = document.getElementById('pe-and');   if (peAnd)   peAnd.textContent   = chamados.filter(c => c.status === 'andamento').length;
+  const peDone  = document.getElementById('pe-done');  if (peDone)  peDone.textContent  = chamados.filter(c => c.status === 'concluido').length;
+  const nb = document.getElementById('nbc');
+  if (nb) { const u = G().notifs.filter(n=>!n.read).length; nb.textContent = u||''; nb.className = 'nbc' + (u?' on':''); }
+  let lista = chamados;
+  if (_peFiltro !== 'todos') lista = chamados.filter(c => c.status === _peFiltro);
+  const liEl = document.getElementById('pe-lista');
+  if (!liEl) return;
+  if (!lista.length) {
+    liEl.innerHTML = '<div class="pe-empty"><div class="ei">📋</div><p style="font-size:13px">' + (_peFiltro === 'todos' ? 'Nenhum chamado ainda.' : 'Sem chamados com este status.') + '</p></div>';
     return;
   }
-  // outros perfis: layout normal
-  document.getElementById('mainLayout').style.display='flex';
-  document.getElementById('portalEscola').style.display='none';
-  ['navUsr','navLogs'].forEach(id=>{ const el=document.getElementById(id); if(el) el.style.display=isAdmin?'flex':'none'; });
-  [['btnNovoChamado',canWrite],['btnNovoChamado2',canWrite],['btnNovaEscola',canWrite],['btnNovoMembro',isAdmin]].forEach(([id,ok])=>{ const el=document.getElementById(id); if(el) el.disabled=!ok; });
+  liEl.innerHTML = lista.map(function(c) {
+    const m = c.membroId ? G().membros.find(x => x.id === c.membroId) : null;
+    const dt = fmtData(c.criadoEm);
+    return '<div class="pe-card" onclick="abrirPeDetalhe('' + c.id + '')">' +
+      '<div class="pe-card-hd"><div class="pe-card-titulo">' + c.desc + '</div>' +
+      '<div style="display:flex;gap:6px;flex-shrink:0">' + prioBadge(c.prioridade) + ' ' + stsBadge(c.status) + '</div></div>' +
+      '<div class="pe-card-meta"><span>🔧 ' + c.categoria + '</span>' +
+      (c.equip ? '<span>💻 ' + c.equip + '</span>' : '') +
+      (c.solicitante ? '<span>👤 ' + c.solicitante + '</span>' : '') +
+      '<span>📅 ' + dt + '</span></div>' +
+      '<div class="pe-card-footer"><div>' +
+      (m ? '<span class="chip"><span class="chip-av">' + m.nome[0] + '</span>' + m.nome + '</span>' : '<span class="unass">Aguardando atribuição</span>') +
+      '</div><span class="mono" style="font-size:10px">#' + c.id.slice(-5) + '</span></div></div>';
+  }).join('');
+  const fEscola = document.getElementById('fEscola');
+  if (fEscola && escola) { fEscola.innerHTML = '<option value="' + escola.id + '">' + escola.nome + '</option>'; fEscola.disabled = true; }
 }
-
-async function doLogin() {
-  const email = document.getElementById('lEmail').value.trim();
-  const senha  = document.getElementById('lSenha').value;
-  const err   = document.getElementById('lErr');
-  const lock  = document.getElementById('lLock');
-  err.classList.remove('on'); lock.classList.remove('on');
-  if (!email||!senha) { err.textContent='Preencha e-mail e senha.'; err.classList.add('on'); return; }
-  const btn = document.getElementById('btnLogin');
-  btn.disabled=true; btn.textContent='⏳ Verificando...';
-  try {
-    await window._AUTH.login(email,senha);
-  } catch(e) {
-    btn.disabled=false; btn.textContent='🔐 Entrar';
-    if (e.message?.startsWith('BLOQUEADO:')) {
-      lock.textContent=`🔒 Muitas tentativas. Aguarde ${e.message.split(':')[1]} minuto(s).`;
-      lock.classList.add('on');
-    } else {
-      const msgs={'auth/invalid-credential':'E-mail ou senha incorretos.','auth/user-not-found':'Usuário não encontrado.','auth/wrong-password':'Senha incorreta.','auth/too-many-requests':'🔒 Conta bloqueada pelo servidor. Aguarde ou redefina sua senha.','auth/user-disabled':'Conta desativada. Contate o administrador.','auth/network-request-failed':'Erro de rede. Verifique sua conexão.'};
-      err.textContent=msgs[e.code]||'Erro ao fazer login. Tente novamente.';
-      err.classList.add('on');
-    }
-  }
-}
-
-async function doLogout() {
-  await window._AUTH.logout().catch(()=>{});
-}
-
-async function doReset() {
-  const email=document.getElementById('rEmail').value.trim();
-  const info=document.getElementById('lInfo'); const err=document.getElementById('lErr');
-  if(!email){err.textContent='Informe o e-mail.';err.classList.add('on');return;}
-  try {
-    await window._AUTH.resetSenha(email);
-    info.textContent='✓ Link enviado! Verifique sua caixa de entrada.';
-    info.classList.add('on'); err.classList.remove('on');
-    setTimeout(showLogin,4000);
-  } catch(e) { err.textContent='Erro ao enviar. Verifique o e-mail.'; err.classList.add('on'); }
-}
-
-async function doChangeSenha() {
-  const atual=document.getElementById('sAtual').value;
-  const nova =document.getElementById('sNova').value;
-  const conf =document.getElementById('sConf').value;
-  if(!atual||!nova||!conf){toast('Preencha todos os campos.','erro');return;}
-  if(nova!==conf){toast('As senhas não coincidem.','erro');return;}
-  if(nova.length<8){toast('Mínimo 8 caracteres.','erro');return;}
-  if(forcaSenha(nova)<2){toast('Senha muito fraca. Use letras, números e símbolo.','erro');return;}
-  try {
-    await window._AUTH.trocarSenha(atual,nova);
-    fecharM('mSenha');
-    ['sAtual','sNova','sConf'].forEach(id=>document.getElementById(id).value='');
-    toast('✓ Senha alterada com sucesso!','ok');
-  } catch(e) {
-    const msgs={'auth/wrong-password':'Senha atual incorreta.','auth/weak-password':'Nova senha muito fraca.','auth/requires-recent-login':'Faça login novamente antes de alterar a senha.'};
-    toast(msgs[e.code]||'Erro ao alterar senha.','erro');
-  }
-}
-
-function showReset()  { document.getElementById('formLogin').style.display='none'; document.getElementById('formReset').style.display='block'; ['lErr','lInfo','lLock'].forEach(id=>document.getElementById(id).classList.remove('on')); }
-function showLogin()  { document.getElementById('formLogin').style.display='block'; document.getElementById('formReset').style.display='none'; ['lErr','lInfo','lLock'].forEach(id=>document.getElementById(id).classList.remove('on')); }
-
-function togglePwd(id,btn) { const i=document.getElementById(id); i.type=i.type==='password'?'text':'password'; btn.textContent=i.type==='password'?'👁':'🙈'; }
-
-function forcaSenha(p) {
-  let s=0;
-  if(p.length>=8)s++; if(/[A-Z]/.test(p))s++; if(/[0-9]/.test(p))s++; if(/[^A-Za-z0-9]/.test(p))s++;
-  return s;
-}
-function checkForca(p) {
-  const s=forcaSenha(p);
-  const fill=document.getElementById('sfill'); const lbl=document.getElementById('slbl');
-  const cores=['var(--red)','var(--red)','var(--yel)','var(--blue)','var(--grn)'];
-  const labs=['','Muito fraca','Fraca','Moderada','Forte'];
-  fill.style.width=(s*25)+'%'; fill.style.background=cores[s];
-  lbl.textContent=labs[s]||''; lbl.style.color=cores[s];
-}
-
-// user menu
-function toggleUMenu() { document.getElementById('udrop').classList.toggle('on'); }
-document.addEventListener('click',e=>{
-  if(!e.target.closest('.umenu')) document.getElementById('udrop').classList.remove('on');
-  if(!e.target.closest('#np')&&!e.target.closest('#btnNotif')) document.getElementById('np').classList.remove('on');
-});
-document.querySelectorAll('.overlay').forEach(o=>o.addEventListener('click',e=>{if(e.target===o)o.classList.remove('on')}));
-document.addEventListener('keydown',e=>{if(e.key==='Enter'&&document.getElementById('loginScreen').classList.contains('on')&&document.getElementById('formLogin').style.display!=='none')doLogin();});
-
-// ════════════════════════════════════════════
-// RENDER
-// ════════════════════════════════════════════
-function render() {
-  // perfil escola: usa portal dedicado
-  if (isEscola && isEscola()) { renderPortalEscola && renderPortalEscola(); return; }
-
-  const {chamados, escolas, membros, usuarios, currentFilter} = G();
-  const canWrite = perm('chamado');
-
-  // ── Stats e contadores ──────────────────────────
-  const $  = id => document.getElementById(id);
-  const $t = (id, val) => { const el = $(id); if(el) el.textContent = val; };
-
-  try {
-    $t('sTotal', chamados.length);
-    $t('sAnd',   chamados.filter(c=>c.status==='andamento').length);
-    $t('sDone',  chamados.filter(c=>c.status==='concluido').length);
-    $t('sUrg',   chamados.filter(c=>c.prioridade==='urgente'&&c.status!=='concluido').length);
-    $t('nc-c',   chamados.length);
-    $t('nc-e',   escolas.length);
-    $t('nc-m',   membros.length);
-    $t('nc-u',   usuarios.length);
-    $t('nc-urg', chamados.filter(c=>c.prioridade==='urgente'&&c.status!=='concluido').length);
-    $t('nc-ab',  chamados.filter(c=>c.status==='aberto').length);
-    $t('nc-and', chamados.filter(c=>c.status==='andamento').length);
-    $t('nc-ok',  chamados.filter(c=>c.status==='concluido').length);
-    const nb = $('nbc');
-    if (nb) { const u=G().notifs.filter(n=>!n.read).length; nb.textContent=u||''; nb.className='nbc'+(u?' on':''); }
-  } catch(e) { console.error('[render] stats:', e); }
-
-  // ── Chamados recentes (dashboard) ───────────────
-  try {
-    const el = $('tbRecent');
-    if (el) el.innerHTML = chamados.slice(0,6).map(c=>rowShort(c)).join('') ||
-      `<tr><td colspan="7"><div class="empty"><div class="empty-ico">📭</div><p>Nenhum chamado ainda</p></div></td></tr>`;
-  } catch(e) { console.error('[render] tbRecent:', e); }
-
-  // ── Chamados filtrados ──────────────────────────
-  try {
-    const el = $('tbAll');
-    if (el) {
-      let fil = chamados;
-      if (currentFilter==='urgente') fil = chamados.filter(c=>c.prioridade==='urgente'&&c.status!=='concluido');
-      else if (currentFilter!=='todos') fil = chamados.filter(c=>c.status===currentFilter);
-      el.innerHTML = fil.map(c=>rowFull(c)).join('') ||
-        `<tr><td colspan="9"><div class="empty"><div class="empty-ico">🔍</div><p>Nenhum chamado encontrado</p></div></td></tr>`;
-    }
-  } catch(e) { console.error('[render] tbAll:', e); }
-
-  // ── Escolas ─────────────────────────────────────
-  try {
-    const el = $('listaEscolas');
-    if (el) {
-      el.innerHTML = escolas.map(e => {
-        const calls  = chamados.filter(c=>c.escolaId===e.id);
-        const ativos = calls.filter(c=>c.status!=='concluido').length;
-        const del    = canWrite ? `<button class="btn bd btn-xs" onclick="delEscola('${e.id}','${e.nome.replace(/'/g,"\'")}')">✕</button>` : '';
-        return `<div class="sc">
-          <div class="sc-inf">
-            <div class="sc-av">${e.nome[0]}</div>
-            <div><div class="sc-nm">${e.nome}</div><div class="sc-me">📍 ${e.bairro||'—'} · 👤 ${e.dir||'—'} · 📞 ${e.tel||'—'}</div></div>
-          </div>
-          <div class="sc-st">
-            <div class="sc-sv"><div class="v" style="color:var(--blue)">${ativos}</div><div class="l">Ativos</div></div>
-            <div class="sc-sv"><div class="v">${calls.length}</div><div class="l">Total</div></div>
-            <div class="sc-sv"><div class="v" style="color:var(--grn)">${calls.filter(c=>c.status==='concluido').length}</div><div class="l">Concluídos</div></div>
-            <div style="display:flex;gap:6px;align-items:center">
-              <button class="btn bs btn-sm" onclick="filtrarEscola('${e.id}')">Ver chamados</button>
-              ${del}
-            </div>
-          </div>
-        </div>`;
-      }).join('') || `<div class="empty"><div class="empty-ico">🏫</div><p>Nenhuma escola cadastrada</p></div>`;
-    }
-  } catch(e) { console.error('[render] listaEscolas:', e); }
-
-  // ── Membros TI ──────────────────────────────────
-  try {
-    const el = $('tbMembros');
-    if (el) {
-      el.innerHTML = membros.map(m => {
-        const ativos = chamados.filter(c=>c.membroId===m.id&&c.status!=='concluido').length;
-        const del    = G().perfil?.role==='admin'
-          ? `<button class="btn bd btn-xs" onclick="delMembro('${m.id}','${m.nome.replace(/'/g,"\'")}')">✕ Remover</button>` : '—';
-        return `<tr>
-          <td><div style="display:flex;align-items:center;gap:10px">
-            <div class="mav">${m.nome[0]}</div>
-            <div><div style="font-weight:500">${m.nome}</div><div style="font-size:11px;color:var(--tx2)">${m.tel||''}</div></div>
-          </div></td>
-          <td style="font-size:12px">${m.espec}</td>
-          <td style="font-size:11px;color:var(--tx2)">${m.email||'—'}</td>
-          <td><span style="font-family:'IBM Plex Mono',monospace;color:var(--yel);font-size:13px;font-weight:600">${ativos}</span></td>
-          <td><span class="badge b-done">Ativo</span></td>
-          <td>${del}</td>
-        </tr>`;
-      }).join('') || `<tr><td colspan="6"><div class="empty"><div class="empty-ico">👥</div><p>Nenhum membro</p></div></td></tr>`;
-    }
-  } catch(e) { console.error('[render] tbMembros:', e); }
-
-  // ── Usuários ────────────────────────────────────
-  try {
-    const el = $('tbUsuarios');
-    if (el) {
-      el.innerHTML = usuarios.map(u => {
-        const isMe  = u.id === G().user?.uid;
-        const toggle = !isMe
-          ? `<button class="btn btn-xs ${u.ativo===false?'bp':'bw'}" onclick="toggleUser('${u.id}',${u.ativo===false})">${u.ativo===false?'▶ Ativar':'⏸ Desativar'}</button>`
-          : '<span style="font-size:11px;color:var(--grn)">● você</span>';
-        return `<tr>
-          <td style="font-weight:500">${u.nome}${u.role==='escola'&&u.escolaId?`<div style="font-size:10px;color:var(--grn);margin-top:2px">🏫 ${escNome(u.escolaId)}</div>`:''}</td>
-          <td style="font-size:12px;color:var(--tx2)">${u.email||'—'}</td>
-          <td>${roleBadge(u.role)}</td>
-          <td>${u.ativo===false?'<span class="badge b-urg">Inativo</span>':'<span class="badge b-done">Ativo</span>'}</td>
-          <td class="mono">${fmtData(u.criadoEm)}</td>
-          <td>${toggle}</td>
-        </tr>`;
-      }).join('') || `<tr><td colspan="6"><div class="empty"><div class="empty-ico">🛡</div><p>Nenhum usuário</p></div></td></tr>`;
-    }
-  } catch(e) { console.error('[render] tbUsuarios:', e); }
-
-  // ── Notificações ────────────────────────────────
-  try {
-    const el = $('npList');
-    if (el) {
-      el.innerHTML = G().notifs.map(n =>
-        `<div class="nit ${n.read?'':'unread'}" onclick="clickNotif('${n.id}','${n.callId||''}')">
-          <div class="nt">${n.title}</div><div class="nd">${n.desc}</div><div class="nm">${n.time}</div>
-        </div>`).join('') || `<div class="empty"><div class="empty-ico">🔔</div><p>Sem notificações</p></div>`;
-    }
-  } catch(e) { console.error('[render] npList:', e); }
-
-  // ── Preencher selects ───────────────────────────
-  try {
-    const fEsc = $('fEscola');
-    if (fEsc) fEsc.innerHTML = escolas.map(e=>`<option value="${e.id}">${e.nome}</option>`).join('') || '<option value="">— Cadastre uma escola primeiro —</option>';
-    const nuEsc = $('nuEscolaId');
-    if (nuEsc) { const cur=nuEsc.value; nuEsc.innerHTML='<option value="">— Selecione a escola —</option>'+escolas.map(e=>`<option value="${e.id}">${e.nome}</option>`).join(''); nuEsc.value=cur; }
-    ['fMembro','assignSel'].forEach(id => {
-      const el = $(id); if (!el) return;
-      el.innerHTML = '<option value="">— Sem responsável —</option>' + membros.map(m=>`<option value="${m.id}">${m.nome} (${m.espec})</option>`).join('');
-    });
-  } catch(e) { console.error('[render] selects:', e); }
-
-  // ── Detalhe aberto ──────────────────────────────
-  try {
-    if (G().viewingId && $('dpanel')?.classList.contains('on')) renderDetail(G().viewingId);
-  } catch(e) { console.error('[render] detail:', e); }
-}
-
-
-// ── Expor TODAS as funções usadas em onclick= para o escopo global ──
-// Sobrescrever os proxies com as funções reais
-window.render          = render;
-window.mostrarLogin    = mostrarLogin;
-window.mostrarApp      = mostrarApp;
-window.toast           = toast;
-window.irPagina        = irPagina;
-window.irFiltro        = irFiltro;
-window.setFiltro       = setFiltro;
-window.filtrarEscola   = filtrarEscola;
-window.abrirM          = abrirM;
-window.fecharM         = fecharM;
-window.openDetail      = abrirDetail;
-window.abrirDetail     = abrirDetail;
-window.fecharDetail    = fecharDetail;
-window.toggleNotif     = toggleNotif;
-window.markRead        = markRead;
-window.clickNotif      = clickNotif;
-window.toggleUMenu     = toggleUMenu;
-window.togglePwd       = togglePwd;
-window.showReset       = showReset;
-window.showLogin       = showLogin;
-window.doLogin         = doLogin;
-window.doLogout        = doLogout;
-window.doReset         = doReset;
-window.doChangeSenha   = doChangeSenha;
-window.submitChamado   = submitChamado;
-window.submitEscola    = submitEscola;
-window.submitMembro    = submitMembro;
-window.submitUsuario   = submitUsuario;
-window.confirmarAssign = confirmarAssign;
-window.abrirAssign     = abrirAssign;
-window.updStatus       = updStatus;
-window.delEscola       = delEscola;
-window.delMembro       = delMembro;
-window.toggleUser      = toggleUser;
-window.testarFirestore = testarFirestore;
-window.setPeFiltro     = setPeFiltro;
-window.abrirPeDetalhe  = abrirPeDetalhe;
-window.toggleCampoEscola = toggleCampoEscola;
-window.carregarLogs    = carregarLogs;
-window.renderDetail    = renderDetail;
-
 
 </script>
 
