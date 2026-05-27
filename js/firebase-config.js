@@ -4,12 +4,13 @@
 // ============================================================
 
 const firebaseConfig = {
-  apiKey: "SUA_API_KEY_AQUI",
-  authDomain: "SEU_PROJECT_ID.firebaseapp.com",
-  projectId: "SEU_PROJECT_ID",
-  storageBucket: "SEU_PROJECT_ID.appspot.com",
-  messagingSenderId: "SEU_MESSAGING_SENDER_ID",
-  appId: "SEU_APP_ID"
+  apiKey: "AIzaSyA_JFdju1pcwYayX5J3Nh-Fru0gKteXGbw",
+  authDomain: "ti-chamados-escolar.firebaseapp.com",
+  projectId: "ti-chamados-escolar",
+  storageBucket: "ti-chamados-escolar.firebasestorage.app",
+  messagingSenderId: "403272914832",
+  appId: "1:403272914832:web:f400eb38304a06fb5b8515",
+  measurementId: "G-8N57XX2EZQ"
 };
 
 // Inicializa o Firebase
