@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="description" content="Sistema de Chamados de TI para Unidades Escolares"/>
+  <title>Login — TI Chamados Escolar</title>
+  <link rel="stylesheet" href="css/style.css"/>
+  <style>
+    .login-divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; color: var(--text3); font-size: 0.8rem; }
+    .login-divider::before, .login-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+    .forgot-link { font-size: 0.82rem; color: var(--text2); text-align: right; margin-top: 6px; display: block; }
+    .forgot-link:hover { color: var(--accent); }
+    .pass-wrap { position: relative; }
+    .pass-toggle { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text3); cursor: pointer; font-size: 1rem; padding: 4px; }
+    .pass-toggle:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+  <div class="login-page">
+    <div class="login-bg"></div>
+    <div class="login-card">
+      <div class="login-logo">
+        <div class="icon">🖥️</div>
+        <h1>TI Chamados</h1>
+        <p>Sistema de Suporte — Unidades Escolares</p>
+      </div>
+
+      <div id="form-login">
+        <div class="form-group">
+          <label for="email">E-mail</label>
+          <input type="email" id="email" class="form-control" placeholder="seu@email.com" autocomplete="email"/>
+        </div>
+        <div class="form-group">
+          <label for="senha">Senha</label>
+          <div class="pass-wrap">
+            <input type="password" id="senha" class="form-control" placeholder="••••••••" autocomplete="current-password"/>
+            <button class="pass-toggle" onclick="toggleSenha('senha')" tabindex="-1" type="button">👁</button>
+          </div>
+          <a href="#" class="forgot-link" onclick="mostrarEsqueciSenha()">Esqueci minha senha</a>
+        </div>
+        <div id="login-error" style="background:#231616;border:1px solid var(--danger);border-radius:8px;padding:10px 14px;font-size:0.85rem;color:var(--danger);margin-bottom:16px;display:none;"></div>
+        <button class="btn btn-primary w-full" id="btn-login" onclick="fazerLogin()">
+          Entrar no Sistema
+        </button>
+      </div>
+
+      <div id="form-esqueci" style="display:none;">
+        <p class="text-muted text-sm mb-2">Informe seu e-mail para receber o link de redefinição de senha.</p>
+        <div class="form-group">
+          <label for="email-reset">E-mail</label>
+          <input type="email" id="email-reset" class="form-control" placeholder="seu@email.com"/>
+        </div>
+        <div id="reset-msg" style="display:none;margin-bottom:12px;font-size:0.85rem;"></div>
+        <div class="d-flex gap-2">
+          <button class="btn btn-secondary" onclick="mostrarLogin()">← Voltar</button>
+          <button class="btn btn-primary" style="flex:1" onclick="enviarReset()">Enviar Link</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <script src="js/firebase-config.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    // Redireciona se já logado
+    auth.onAuthStateChanged(async user => {
+      if (user) {
+        const snap = await db.collection('usuarios').doc(user.uid).get();
+        if (snap.exists && snap.data().ativo !== false) {
+          redirecionarPerfil(snap.data().perfil);
+        }
+      }
+    });
+
+    function redirecionarPerfil(perfil) {
+      if (perfil === 'admin') window.location.href = 'pages/admin-dashboard.html';
+      else if (perfil === 'tecnico') window.location.href = 'pages/tecnico-dashboard.html';
+      else window.location.href = 'pages/solicitante-dashboard.html';
+    }
+
+    async function fazerLogin() {
+      const email = document.getElementById('email').value.trim();
+      const senha = document.getElementById('senha').value;
+      const errEl = document.getElementById('login-error');
+      const btn = document.getElementById('btn-login');
+
+      if (!email || !senha) { mostrarErro('Preencha e-mail e senha.'); return; }
+
+      btn.disabled = true;
+      btn.textContent = 'Entrando...';
+      errEl.style.display = 'none';
+
+      try {
+        const user = await Auth.login(email, senha);
+        const snap = await db.collection('usuarios').doc(user.uid).get();
+        redirecionarPerfil(snap.data().perfil);
+      } catch (e) {
+        mostrarErro(e.message);
+        btn.disabled = false;
+        btn.textContent = 'Entrar no Sistema';
+      }
+    }
+
+    function mostrarErro(msg) {
+      const el = document.getElementById('login-error');
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+
+    function toggleSenha(id) {
+      const input = document.getElementById(id);
+      input.type = input.type === 'password' ? 'text' : 'password';
+    }
+
+    function mostrarEsqueciSenha() {
+      document.getElementById('form-login').style.display = 'none';
+      document.getElementById('form-esqueci').style.display = 'block';
+    }
+
+    function mostrarLogin() {
+      document.getElementById('form-esqueci').style.display = 'none';
+      document.getElementById('form-login').style.display = 'block';
+    }
+
+    async function enviarReset() {
+      const email = document.getElementById('email-reset').value.trim();
+      const msgEl = document.getElementById('reset-msg');
+      if (!email) { msgEl.style.display='block'; msgEl.style.color='var(--danger)'; msgEl.textContent='Informe o e-mail.'; return; }
+      try {
+        await Auth.resetPassword(email);
+        msgEl.style.display='block';
+        msgEl.style.color='var(--success)';
+        msgEl.textContent='Link enviado! Verifique sua caixa de entrada.';
+      } catch(e) {
+        msgEl.style.display='block';
+        msgEl.style.color='var(--danger)';
+        msgEl.textContent='Erro ao enviar. Verifique o e-mail informado.';
+      }
+    }
+
+    // Enter para login
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && document.getElementById('form-login').style.display !== 'none') fazerLogin();
+    });
+  </script>
+</body>
+</html>
