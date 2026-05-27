@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Chamados — Admin | TI Chamados</title>
+  <link rel="stylesheet" href="../css/style.css"/>
+</head>
+<body>
+<div class="app-layout">
+  <div id="sidebar-container"></div>
+  <div class="main-content">
+    <div id="topbar-container"></div>
+    <div class="page-body">
+      <div class="page-header">
+        <div><h2>📋 Todos os Chamados</h2><p>Gerencie e acompanhe todos os chamados do sistema</p></div>
+      </div>
+
+      <!-- Filtros -->
+      <div class="table-wrapper" style="margin-bottom:16px;">
+        <div class="table-toolbar" style="flex-wrap:wrap;gap:10px;">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" class="form-control" id="busca" placeholder="Buscar chamado..." oninput="filtrar()" style="width:220px;"/>
+          </div>
+          <select class="form-control" id="filtro-status" onchange="filtrar()" style="width:160px;">
+            <option value="">Todos os status</option>
+            <option value="aberto">Aberto</option>
+            <option value="andamento">Em Andamento</option>
+            <option value="aguardando">Aguardando</option>
+            <option value="resolvido">Resolvido</option>
+            <option value="cancelado">Cancelado</option>
+          </select>
+          <select class="form-control" id="filtro-prioridade" onchange="filtrar()" style="width:150px;">
+            <option value="">Todas as prioridades</option>
+            <option value="critica">Crítica</option>
+            <option value="alta">Alta</option>
+            <option value="media">Média</option>
+            <option value="baixa">Baixa</option>
+          </select>
+          <select class="form-control" id="filtro-unidade" onchange="filtrar()" style="width:200px;">
+            <option value="">Todas as unidades</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <div id="tabela-chamados"><div class="empty-state"><div class="spinner" style="margin:auto"></div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Detalhes/Edição do Chamado -->
+<div class="modal-overlay" id="modal-chamado">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3 id="modal-chamado-titulo">Detalhes do Chamado</h3>
+      <button class="modal-close" onclick="fecharModal('modal-chamado')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-chamado-body">Carregando...</div>
+    <div class="modal-footer" id="modal-chamado-footer"></div>
+  </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/auth.js"></script>
+<script src="../js/utils.js"></script>
+<script src="../js/layout.js"></script>
+<script>
+let todosOsChamados = [];
+let tecnicos = [];
+let unsubChamados = null;
+
+(async () => {
+  const { user, perfil } = await Auth.requireAuth(['admin']);
+  Layout.renderSidebar('admin', 'chamados', perfil);
+  Layout.renderTopbar('Todos os Chamados');
+  NotifManager.iniciar(user.uid, perfil.perfil);
+
+  await carregarUnidadesFiltro();
+  await carregarTecnicos();
+  iniciarEscutaChamados();
+
+  // Abrir chamado direto se URL tem ?chamado=
+  const params = new URLSearchParams(location.search);
+  if (params.get('chamado')) setTimeout(() => abrirChamado(params.get('chamado')), 800);
+})();
+
+async function carregarTecnicos() {
+  const snap = await db.collection('usuarios').where('perfil','in',['tecnico','admin']).where('ativo','==',true).get();
+  tecnicos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+async function carregarUnidadesFiltro() {
+  const snap = await db.collection('unidades').orderBy('nome').get();
+  const sel = document.getElementById('filtro-unidade');
+  snap.docs.forEach(d => {
+    const o = document.createElement('option');
+    o.value = d.id; o.textContent = d.data().nome;
+    sel.appendChild(o);
+  });
+}
+
+function iniciarEscutaChamados() {
+  if (unsubChamados) unsubChamados();
+  unsubChamados = db.collection('chamados').orderBy('criadoEm','desc')
+    .onSnapshot(snap => {
+      todosOsChamados = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      filtrar();
+    }, err => console.error(err));
+}
+
+function filtrar() {
+  const busca = document.getElementById('busca').value.toLowerCase();
+  const status = document.getElementById('filtro-status').value;
+  const prioridade = document.getElementById('filtro-prioridade').value;
+  const unidade = document.getElementById('filtro-unidade').value;
+
+  const filtrados = todosOsChamados.filter(c => {
+    if (status && c.status !== status) return false;
+    if (prioridade && c.prioridade !== prioridade) return false;
+    if (unidade && c.unidadeId !== unidade) return false;
+    if (busca && !`${c.assunto} ${c.unidadeNome} ${c.solicitanteNome} ${c.tecnicoNome}`.toLowerCase().includes(busca)) return false;
+    return true;
+  });
+  renderTabela(filtrados);
+}
+
+function renderTabela(chamados) {
+  const el = document.getElementById('tabela-chamados');
+  if (!chamados.length) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><p>Nenhum chamado encontrado.</p></div>`;
+    return;
+  }
+  el.innerHTML = `<table>
+    <thead><tr><th>#</th><th>Unidade</th><th>Assunto</th><th>Prioridade</th><th>Status</th><th>Técnico</th><th>Aberto em</th><th></th></tr></thead>
+    <tbody>${chamados.map(c => {
+      const id = c.id.substring(0,6).toUpperCase();
+      return `<tr>
+        <td><code style="font-size:.78rem;color:var(--accent)">#${id}</code></td>
+        <td style="font-size:.85rem">${sanitize(c.unidadeNome||'—')}</td>
+        <td style="max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sanitize(c.assunto||'—')}</td>
+        <td>${badgePrioridade(c.prioridade)}</td>
+        <td>${badgeStatus(c.status)}</td>
+        <td style="font-size:.83rem">${c.tecnicoNome ? sanitize(c.tecnicoNome) : '<span class="text-muted">—</span>'}</td>
+        <td class="text-muted text-sm">${tempoRelativo(c.criadoEm)}</td>
+        <td><button class="btn btn-secondary btn-xs" onclick="abrirChamado('${c.id}')">Ver</button></td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+}
+
+async function abrirChamado(id) {
+  abrirModal('modal-chamado');
+  document.getElementById('modal-chamado-body').innerHTML = `<div class="empty-state"><div class="spinner" style="margin:auto"></div></div>`;
+  document.getElementById('modal-chamado-footer').innerHTML = '';
+  try {
+    const snap = await db.collection('chamados').doc(id).get();
+    if (!snap.exists) { document.getElementById('modal-chamado-body').innerHTML = '<p>Chamado não encontrado.</p>'; return; }
+    const c = { id: snap.id, ...snap.data() };
+    document.getElementById('modal-chamado-titulo').textContent = `#${id.substring(0,6).toUpperCase()} — ${c.assunto}`;
+    renderDetalhesChamado(c);
+  } catch(e) { document.getElementById('modal-chamado-body').innerHTML = `<p style="color:var(--danger)">Erro ao carregar: ${e.message}</p>`; }
+}
+
+function renderDetalhesChamado(c) {
+  const tecOpts = tecnicos.map(t => `<option value="${t.id}" ${c.tecnicoId===t.id?'selected':''}>${sanitize(t.nome)}</option>`).join('');
+  const statusOpts = ['aberto','andamento','aguardando','resolvido','cancelado'].map(s =>
+    `<option value="${s}" ${c.status===s?'selected':''}>${STATUS_CONFIG[s]?.label||s}</option>`).join('');
+  const prioOpts = ['baixa','media','alta','critica'].map(p =>
+    `<option value="${p}" ${c.prioridade===p?'selected':''}>${PRIORIDADE_CONFIG[p]?.label||p}</option>`).join('');
+
+  document.getElementById('modal-chamado-body').innerHTML = `
+    <div class="detail-section">
+      <h4>Informações Gerais</h4>
+      <div class="detail-grid">
+        <div class="detail-item"><label>Unidade Escolar</label><span>${sanitize(c.unidadeNome||'—')}</span></div>
+        <div class="detail-item"><label>Solicitante</label><span>${sanitize(c.solicitanteNome||'—')}</span></div>
+        <div class="detail-item"><label>Abertura</label><span>${formatarData(c.criadoEm)}</span></div>
+        <div class="detail-item"><label>Última atualização</label><span>${formatarData(c.atualizadoEm)}</span></div>
+        <div class="detail-item"><label>Categoria</label><span>${sanitize(c.categoria||'—')}</span></div>
+        <div class="detail-item"><label>Patrimônio/Equipamento</label><span>${sanitize(c.patrimonio||'—')}</span></div>
+      </div>
+    </div>
+    <div class="detail-section">
+      <h4>Descrição do Problema</h4>
+      <div class="chamado-desc">${sanitize(c.descricao||'Sem descrição.')}</div>
+    </div>
+    <div class="detail-section">
+      <h4>Gerenciar Chamado</h4>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Status</label>
+          <select class="form-control" id="edit-status">${statusOpts}</select>
+        </div>
+        <div class="form-group">
+          <label>Prioridade</label>
+          <select class="form-control" id="edit-prioridade">${prioOpts}</select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Técnico Responsável</label>
+        <select class="form-control" id="edit-tecnico">
+          <option value="">— Não atribuído —</option>
+          ${tecOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Observação / Anotação Interna</label>
+        <textarea class="form-control" id="edit-obs" rows="3" placeholder="Adicionar anotação...">${sanitize(c.observacao||'')}</textarea>
+      </div>
+    </div>`;
+
+  document.getElementById('modal-chamado-footer').innerHTML = `
+    <button class="btn btn-secondary" onclick="fecharModal('modal-chamado')">Fechar</button>
+    <button class="btn btn-primary" onclick="salvarChamado('${c.id}')">💾 Salvar Alterações</button>`;
+}
+
+async function salvarChamado(id) {
+  const status = document.getElementById('edit-status').value;
+  const prioridade = document.getElementById('edit-prioridade').value;
+  const tecnicoId = document.getElementById('edit-tecnico').value;
+  const observacao = document.getElementById('edit-obs').value.trim();
+
+  const tecnico = tecnicos.find(t => t.id === tecnicoId);
+  const tecnicoNome = tecnico?.nome || null;
+
+  showLoading('Salvando...');
+  try {
+    const snap = await db.collection('chamados').doc(id).get();
+    const anterior = snap.data();
+
+    await db.collection('chamados').doc(id).update({
+      status, prioridade, observacao,
+      tecnicoId: tecnicoId || null,
+      tecnicoNome: tecnicoNome,
+      atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+      atualizadoPor: Auth.getUser().uid,
+    });
+
+    // Notificar técnico se foi atribuído agora
+    if (tecnicoId && tecnicoId !== anterior.tecnicoId) {
+      await NotifManager.criarNotificacao(tecnicoId, 'atribuido',
+        `Chamado #${id.substring(0,6).toUpperCase()} foi atribuído a você.`, id);
+    }
+
+    hideLoading();
+    fecharModal('modal-chamado');
+    Toast.success('Chamado atualizado com sucesso!');
+  } catch(e) {
+    hideLoading();
+    Toast.error('Erro ao salvar: ' + e.message);
+  }
+}
+</script>
+</body>
+</html>

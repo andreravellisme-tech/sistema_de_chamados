@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Unidades — Admin | TI Chamados</title>
+  <link rel="stylesheet" href="../css/style.css"/>
+</head>
+<body>
+<div class="app-layout">
+  <div id="sidebar-container"></div>
+  <div class="main-content">
+    <div id="topbar-container"></div>
+    <div class="page-body">
+      <div class="page-header">
+        <div><h2>🏫 Unidades Escolares</h2><p>Cadastre e gerencie as unidades atendidas</p></div>
+        <button class="btn btn-primary" onclick="abrirModal('modal-unidade'); editId=null; limparForm()">➕ Nova Unidade</button>
+      </div>
+
+      <div class="table-wrapper">
+        <div class="table-toolbar">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" class="form-control" id="busca-u" placeholder="Buscar unidade..." oninput="filtrar()" style="width:220px;"/>
+          </div>
+        </div>
+        <div id="tabela-unidades"><div class="empty-state"><div class="spinner" style="margin:auto"></div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modal-unidade">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modal-u-titulo">Nova Unidade Escolar</h3>
+      <button class="modal-close" onclick="fecharModal('modal-unidade')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group"><label>Nome da Unidade *</label><input type="text" class="form-control" id="u-nome" placeholder="Ex: EMEF João da Silva"/></div>
+      <div class="form-group"><label>Endereço</label><input type="text" class="form-control" id="u-end" placeholder="Rua, número, bairro..."/></div>
+      <div class="form-row">
+        <div class="form-group"><label>Cidade</label><input type="text" class="form-control" id="u-cidade" placeholder="Ex: São Paulo"/></div>
+        <div class="form-group"><label>Telefone</label><input type="tel" class="form-control" id="u-tel" placeholder="(00) 00000-0000"/></div>
+      </div>
+      <div class="form-group"><label>Responsável da Unidade</label><input type="text" class="form-control" id="u-resp" placeholder="Nome do diretor/coordenador"/></div>
+      <div id="u-erro" style="color:var(--danger);font-size:.83rem;display:none;margin-top:8px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="fecharModal('modal-unidade')">Cancelar</button>
+      <button class="btn btn-primary" id="btn-salvar-u" onclick="salvarUnidade()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/auth.js"></script>
+<script src="../js/utils.js"></script>
+<script src="../js/layout.js"></script>
+<script>
+let todasUnidades = [];
+let editId = null;
+
+(async () => {
+  const { user, perfil } = await Auth.requireAuth(['admin']);
+  Layout.renderSidebar('admin', 'unidades', perfil);
+  Layout.renderTopbar('Unidades Escolares');
+  NotifManager.iniciar(user.uid, perfil.perfil);
+  await carregar();
+})();
+
+async function carregar() {
+  const snap = await db.collection('unidades').orderBy('nome').get();
+  todasUnidades = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  filtrar();
+}
+
+function filtrar() {
+  const busca = document.getElementById('busca-u').value.toLowerCase();
+  const f = todasUnidades.filter(u => !busca || u.nome?.toLowerCase().includes(busca) || u.cidade?.toLowerCase().includes(busca));
+  renderTabela(f);
+}
+
+function renderTabela(unidades) {
+  const el = document.getElementById('tabela-unidades');
+  if (!unidades.length) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">🏫</div><p>Nenhuma unidade cadastrada.</p></div>`;
+    return;
+  }
+  el.innerHTML = `<table>
+    <thead><tr><th>Nome</th><th>Endereço</th><th>Cidade</th><th>Responsável</th><th>Telefone</th><th>Ações</th></tr></thead>
+    <tbody>${unidades.map(u => `
+      <tr>
+        <td><strong>${sanitize(u.nome)}</strong></td>
+        <td class="text-sm text-muted">${sanitize(u.endereco||'—')}</td>
+        <td class="text-sm">${sanitize(u.cidade||'—')}</td>
+        <td class="text-sm">${sanitize(u.responsavel||'—')}</td>
+        <td class="text-sm">${sanitize(u.telefone||'—')}</td>
+        <td>
+          <button class="btn btn-secondary btn-xs" onclick="editar('${u.id}')" style="margin-right:4px">✏️</button>
+          <button class="btn btn-xs" style="background:#ef444420;color:#ef4444;border:1px solid #ef444440" onclick="excluir('${u.id}','${sanitize(u.nome)}')">🗑️</button>
+        </td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+
+function limparForm() {
+  ['u-nome','u-end','u-cidade','u-tel','u-resp'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('u-erro').style.display='none';
+  document.getElementById('modal-u-titulo').textContent = 'Nova Unidade Escolar';
+  document.getElementById('btn-salvar-u').textContent = 'Salvar';
+}
+
+function editar(id) {
+  editId = id;
+  const u = todasUnidades.find(x => x.id === id);
+  if (!u) return;
+  document.getElementById('u-nome').value = u.nome||'';
+  document.getElementById('u-end').value = u.endereco||'';
+  document.getElementById('u-cidade').value = u.cidade||'';
+  document.getElementById('u-tel').value = u.telefone||'';
+  document.getElementById('u-resp').value = u.responsavel||'';
+  document.getElementById('modal-u-titulo').textContent = 'Editar Unidade';
+  document.getElementById('btn-salvar-u').textContent = 'Salvar Alterações';
+  document.getElementById('u-erro').style.display='none';
+  abrirModal('modal-unidade');
+}
+
+async function salvarUnidade() {
+  const nome = document.getElementById('u-nome').value.trim();
+  const erroEl = document.getElementById('u-erro');
+  if (!nome) { erroEl.textContent='Nome é obrigatório.'; erroEl.style.display='block'; return; }
+
+  const dados = {
+    nome,
+    endereco: document.getElementById('u-end').value.trim(),
+    cidade: document.getElementById('u-cidade').value.trim(),
+    telefone: document.getElementById('u-tel').value.trim(),
+    responsavel: document.getElementById('u-resp').value.trim(),
+    atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+  };
+
+  const btn = document.getElementById('btn-salvar-u');
+  btn.disabled = true;
+  try {
+    if (editId) {
+      await db.collection('unidades').doc(editId).update(dados);
+      Toast.success('Unidade atualizada!');
+    } else {
+      dados.criadoEm = firebase.firestore.FieldValue.serverTimestamp();
+      await db.collection('unidades').add(dados);
+      Toast.success('Unidade cadastrada!');
+    }
+    fecharModal('modal-unidade');
+    editId = null;
+    await carregar();
+  } catch(e) { erroEl.textContent=e.message; erroEl.style.display='block'; }
+  finally { btn.disabled=false; }
+}
+
+async function excluir(id, nome) {
+  if (!confirm(`Excluir a unidade "${nome}"? Esta ação não pode ser desfeita.`)) return;
+  showLoading();
+  try {
+    await db.collection('unidades').doc(id).delete();
+    Toast.success('Unidade excluída.');
+    await carregar();
+  } catch(e) { Toast.error('Erro: '+e.message); }
+  finally { hideLoading(); }
+}
+</script>
+</body>
+</html>

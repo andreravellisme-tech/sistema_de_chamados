@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Meus Chamados | TI Chamados</title>
+  <link rel="stylesheet" href="../css/style.css"/>
+</head>
+<body>
+<div class="app-layout">
+  <div id="sidebar-container"></div>
+  <div class="main-content">
+    <div id="topbar-container"></div>
+    <div class="page-body">
+      <div class="page-header">
+        <div>
+          <h2>📋 Meus Chamados</h2>
+          <p id="info-unidade" class="text-muted text-sm">Carregando...</p>
+        </div>
+        <a href="solicitante-novo.html" class="btn btn-primary">➕ Abrir Novo Chamado</a>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card danger"><div class="stat-icon">🔴</div><div class="stat-value" id="st-ab">—</div><div class="stat-label">Abertos</div></div>
+        <div class="stat-card warning"><div class="stat-icon">🟡</div><div class="stat-value" id="st-and">—</div><div class="stat-label">Em Andamento</div></div>
+        <div class="stat-card success"><div class="stat-icon">✅</div><div class="stat-value" id="st-res">—</div><div class="stat-label">Resolvidos</div></div>
+      </div>
+
+      <div class="table-wrapper">
+        <div class="table-toolbar">
+          <select class="form-control" id="filtro-s" onchange="filtrar()" style="width:160px;">
+            <option value="">Todos</option>
+            <option value="aberto">Aberto</option>
+            <option value="andamento">Em Andamento</option>
+            <option value="aguardando">Aguardando</option>
+            <option value="resolvido">Resolvido</option>
+            <option value="cancelado">Cancelado</option>
+          </select>
+        </div>
+        <div id="tabela"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Detalhes -->
+<div class="modal-overlay" id="modal-det">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3 id="det-titulo">Detalhes do Chamado</h3>
+      <button class="modal-close" onclick="fecharModal('modal-det')">✕</button>
+    </div>
+    <div class="modal-body" id="det-body">Carregando...</div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="fecharModal('modal-det')">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/auth.js"></script>
+<script src="../js/utils.js"></script>
+<script src="../js/layout.js"></script>
+<script>
+let todosChamados = [];
+
+(async () => {
+  const { user, perfil } = await Auth.requireAuth(['solicitante']);
+  Layout.renderSidebar('solicitante', 'dashboard', perfil);
+  Layout.renderTopbar('Meus Chamados');
+  NotifManager.iniciar(user.uid, perfil.perfil);
+
+  document.getElementById('info-unidade').textContent = `Unidade: ${perfil.unidadeNome || '—'}`;
+
+  // Escuta em tempo real apenas da unidade do solicitante
+  db.collection('chamados')
+    .where('unidadeId', '==', perfil.unidadeId)
+    .orderBy('criadoEm', 'desc')
+    .onSnapshot(snap => {
+      todosChamados = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      document.getElementById('st-ab').textContent = todosChamados.filter(c=>c.status==='aberto').length;
+      document.getElementById('st-and').textContent = todosChamados.filter(c=>c.status==='andamento').length;
+      document.getElementById('st-res').textContent = todosChamados.filter(c=>c.status==='resolvido').length;
+      filtrar();
+    });
+
+  const params = new URLSearchParams(location.search);
+  if (params.get('chamado')) setTimeout(() => verDetalhes(params.get('chamado')), 800);
+})();
+
+function filtrar() {
+  const s = document.getElementById('filtro-s').value;
+  renderTabela(todosChamados.filter(c => !s || c.status === s));
+}
+
+function renderTabela(chamados) {
+  const el = document.getElementById('tabela');
+  if (!chamados.length) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><p>Nenhum chamado encontrado.<br><a href="solicitante-novo.html">Abrir novo chamado →</a></p></div>`;
+    return;
+  }
+  el.innerHTML = `<table>
+    <thead><tr><th>#</th><th>Assunto</th><th>Categoria</th><th>Prioridade</th><th>Status</th><th>Técnico</th><th>Aberto em</th><th></th></tr></thead>
+    <tbody>${chamados.map(c => `
+      <tr>
+        <td><code style="font-size:.78rem;color:var(--accent)">#${c.id.substring(0,6).toUpperCase()}</code></td>
+        <td style="max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sanitize(c.assunto||'—')}</td>
+        <td class="text-sm text-muted">${sanitize(c.categoria||'—')}</td>
+        <td>${badgePrioridade(c.prioridade)}</td>
+        <td>${badgeStatus(c.status)}</td>
+        <td class="text-sm">${c.tecnicoNome ? sanitize(c.tecnicoNome) : '<span class="text-muted">Aguardando</span>'}</td>
+        <td class="text-muted text-sm">${tempoRelativo(c.criadoEm)}</td>
+        <td><button class="btn btn-secondary btn-xs" onclick="verDetalhes('${c.id}')">Ver</button></td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+
+async function verDetalhes(id) {
+  abrirModal('modal-det');
+  document.getElementById('det-body').innerHTML = `<div class="empty-state"><div class="spinner" style="margin:auto"></div></div>`;
+  const snap = await db.collection('chamados').doc(id).get();
+  if (!snap.exists) return;
+  const c = { id: snap.id, ...snap.data() };
+  document.getElementById('det-titulo').textContent = `#${id.substring(0,6).toUpperCase()} — ${c.assunto}`;
+  document.getElementById('det-body').innerHTML = `
+    <div class="detail-section">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
+        ${badgeStatus(c.status)} ${badgePrioridade(c.prioridade)}
+      </div>
+      <div class="detail-grid">
+        <div class="detail-item"><label>Unidade</label><span>${sanitize(c.unidadeNome||'—')}</span></div>
+        <div class="detail-item"><label>Categoria</label><span>${sanitize(c.categoria||'—')}</span></div>
+        <div class="detail-item"><label>Patrimônio</label><span>${sanitize(c.patrimonio||'—')}</span></div>
+        <div class="detail-item"><label>Aberto em</label><span>${formatarData(c.criadoEm)}</span></div>
+        <div class="detail-item"><label>Técnico Responsável</label>
+          <span>${c.tecnicoNome ? `<strong>${sanitize(c.tecnicoNome)}</strong>` : '<span class="text-muted">Aguardando atribuição</span>'}</span>
+        </div>
+        <div class="detail-item"><label>Última atualização</label><span>${formatarData(c.atualizadoEm)}</span></div>
+      </div>
+    </div>
+    <div class="detail-section">
+      <h4>Descrição do Problema</h4>
+      <div class="chamado-desc">${sanitize(c.descricao||'—')}</div>
+    </div>
+    ${c.observacao ? `<div class="detail-section"><h4>Observação do Técnico</h4><div class="chamado-desc">${sanitize(c.observacao)}</div></div>` : ''}`;
+}
+</script>
+</body>
+</html>

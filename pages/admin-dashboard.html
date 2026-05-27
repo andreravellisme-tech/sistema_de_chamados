@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Dashboard — Admin | TI Chamados</title>
+  <link rel="stylesheet" href="../css/style.css"/>
+</head>
+<body>
+<div class="app-layout">
+  <div id="sidebar-container"></div>
+  <div class="main-content">
+    <div id="topbar-container"></div>
+    <div class="page-body">
+
+      <!-- Stats -->
+      <div class="stats-grid" id="stats-grid">
+        <div class="stat-card danger"><div class="stat-icon">🔴</div><div class="stat-value" id="stat-abertos">—</div><div class="stat-label">Abertos</div></div>
+        <div class="stat-card warning"><div class="stat-icon">🟡</div><div class="stat-value" id="stat-andamento">—</div><div class="stat-label">Em Andamento</div></div>
+        <div class="stat-card info"><div class="stat-icon">🔵</div><div class="stat-value" id="stat-aguardando">—</div><div class="stat-label">Aguardando</div></div>
+        <div class="stat-card success"><div class="stat-icon">🟢</div><div class="stat-value" id="stat-resolvidos">—</div><div class="stat-label">Resolvidos (mês)</div></div>
+      </div>
+
+      <!-- Chamados Recentes -->
+      <div class="table-wrapper">
+        <div class="table-toolbar">
+          <h3>📋 Chamados Recentes</h3>
+          <a href="admin-chamados.html" class="btn btn-secondary btn-sm">Ver todos →</a>
+        </div>
+        <div id="tabela-recentes">
+          <div class="empty-state"><div class="spinner" style="margin:auto"></div></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/auth.js"></script>
+<script src="../js/utils.js"></script>
+<script src="../js/layout.js"></script>
+<script>
+(async () => {
+  const { user, perfil } = await Auth.requireAuth(['admin']);
+  Layout.renderSidebar('admin', 'dashboard', perfil);
+  Layout.renderTopbar('Dashboard');
+  NotifManager.iniciar(user.uid, perfil.perfil);
+  solicitarPermissaoNotificacao();
+  await carregarEstatisticas();
+  await carregarRecentes();
+})();
+
+async function carregarEstatisticas() {
+  try {
+    const snap = await db.collection('chamados').get();
+    const mes = new Date(); mes.setDate(1); mes.setHours(0,0,0,0);
+    let abertos=0, andamento=0, aguardando=0, resolvidos=0;
+    snap.docs.forEach(d => {
+      const s = d.data().status;
+      const cr = d.data().criadoEm?.toDate();
+      if (s === 'aberto') abertos++;
+      else if (s === 'andamento') andamento++;
+      else if (s === 'aguardando') aguardando++;
+      else if (s === 'resolvido' && cr && cr >= mes) resolvidos++;
+    });
+    document.getElementById('stat-abertos').textContent = abertos;
+    document.getElementById('stat-andamento').textContent = andamento;
+    document.getElementById('stat-aguardando').textContent = aguardando;
+    document.getElementById('stat-resolvidos').textContent = resolvidos;
+  } catch(e) { console.error(e); }
+}
+
+async function carregarRecentes() {
+  const el = document.getElementById('tabela-recentes');
+  try {
+    const snap = await db.collection('chamados').orderBy('criadoEm','desc').limit(10).get();
+    if (snap.empty) { el.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><p>Nenhum chamado ainda.</p></div>`; return; }
+    el.innerHTML = `<table>
+      <thead><tr><th>#</th><th>Unidade</th><th>Assunto</th><th>Prioridade</th><th>Status</th><th>Técnico</th><th>Aberto em</th></tr></thead>
+      <tbody>${snap.docs.map(d => {
+        const c = d.data(); const id = d.id.substring(0,6).toUpperCase();
+        return `<tr style="cursor:pointer" onclick="window.location='admin-chamados.html?chamado=${d.id}'">
+          <td><code style="font-size:.78rem;color:var(--text2)">#${id}</code></td>
+          <td>${sanitize(c.unidadeNome||'—')}</td>
+          <td style="max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${sanitize(c.assunto||'—')}</td>
+          <td>${badgePrioridade(c.prioridade)}</td>
+          <td>${badgeStatus(c.status)}</td>
+          <td>${sanitize(c.tecnicoNome||'<span class="text-muted">Não atribuído</span>')}</td>
+          <td class="text-muted text-sm">${tempoRelativo(c.criadoEm)}</td>
+        </tr>`;
+      }).join('')}</tbody></table>`;
+  } catch(e) { el.innerHTML = `<div class="empty-state"><p>Erro ao carregar chamados.</p></div>`; }
+}
+</script>
+</body>
+</html>

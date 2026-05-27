@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Usuários — Admin | TI Chamados</title>
+  <link rel="stylesheet" href="../css/style.css"/>
+</head>
+<body>
+<div class="app-layout">
+  <div id="sidebar-container"></div>
+  <div class="main-content">
+    <div id="topbar-container"></div>
+    <div class="page-body">
+      <div class="page-header">
+        <div><h2>👥 Usuários</h2><p>Gerencie os usuários do sistema</p></div>
+        <button class="btn btn-primary" onclick="abrirModalCadastro()">➕ Novo Usuário</button>
+      </div>
+
+      <div class="table-wrapper">
+        <div class="table-toolbar">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" class="form-control" id="busca-usuario" placeholder="Buscar usuário..." oninput="filtrarUsuarios()" style="width:220px;"/>
+          </div>
+          <select class="form-control" id="filtro-perfil-u" onchange="filtrarUsuarios()" style="width:160px;">
+            <option value="">Todos os perfis</option>
+            <option value="admin">Administrador</option>
+            <option value="tecnico">Técnico</option>
+            <option value="solicitante">Solicitante</option>
+          </select>
+        </div>
+        <div id="tabela-usuarios"><div class="empty-state"><div class="spinner" style="margin:auto"></div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Cadastro/Edição Usuário -->
+<div class="modal-overlay" id="modal-usuario">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modal-user-titulo">Novo Usuário</h3>
+      <button class="modal-close" onclick="fecharModal('modal-usuario')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Nome Completo *</label>
+        <input type="text" class="form-control" id="u-nome" placeholder="Ex: João da Silva"/>
+      </div>
+      <div class="form-group">
+        <label>E-mail *</label>
+        <input type="email" class="form-control" id="u-email" placeholder="email@escola.edu.br"/>
+        <span class="form-hint">Será usado para login no sistema.</span>
+      </div>
+      <div class="form-group" id="grupo-senha">
+        <label>Senha Inicial *</label>
+        <input type="password" class="form-control" id="u-senha" placeholder="Mínimo 8 caracteres"/>
+        <span class="form-hint">O usuário pode alterar após o primeiro acesso via "Esqueci minha senha".</span>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Perfil de Acesso *</label>
+          <select class="form-control" id="u-perfil" onchange="onPerfilChange()">
+            <option value="solicitante">Solicitante</option>
+            <option value="tecnico">Técnico de TI</option>
+            <option value="admin">Administrador</option>
+          </select>
+        </div>
+        <div class="form-group" id="grupo-unidade">
+          <label>Unidade Escolar *</label>
+          <select class="form-control" id="u-unidade">
+            <option value="">Selecione...</option>
+          </select>
+        </div>
+      </div>
+      <div id="u-erro" style="color:var(--danger);font-size:.83rem;display:none;margin-top:8px;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="fecharModal('modal-usuario')">Cancelar</button>
+      <button class="btn btn-primary" id="btn-salvar-user" onclick="salvarUsuario()">Criar Usuário</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Confirmar Desativar -->
+<div class="modal-overlay" id="modal-confirmar">
+  <div class="modal" style="max-width:400px">
+    <div class="modal-header"><h3 id="confirm-titulo">Confirmar Ação</h3><button class="modal-close" onclick="fecharModal('modal-confirmar')">✕</button></div>
+    <div class="modal-body"><p id="confirm-msg" style="color:var(--text2)"></p></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="fecharModal('modal-confirmar')">Cancelar</button>
+      <button class="btn btn-danger" id="btn-confirm-ok">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/auth.js"></script>
+<script src="../js/utils.js"></script>
+<script src="../js/layout.js"></script>
+<script>
+let todosUsuarios = [];
+let unidades = [];
+let editandoUid = null;
+
+(async () => {
+  const { user, perfil } = await Auth.requireAuth(['admin']);
+  Layout.renderSidebar('admin', 'usuarios', perfil);
+  Layout.renderTopbar('Gerenciar Usuários');
+  NotifManager.iniciar(user.uid, perfil.perfil);
+
+  await carregarUnidades();
+  await carregarUsuarios();
+})();
+
+async function carregarUnidades() {
+  const snap = await db.collection('unidades').orderBy('nome').get();
+  unidades = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const sel = document.getElementById('u-unidade');
+  unidades.forEach(u => {
+    const o = document.createElement('option');
+    o.value = u.id; o.textContent = u.nome;
+    sel.appendChild(o);
+  });
+}
+
+async function carregarUsuarios() {
+  const snap = await db.collection('usuarios').orderBy('nome').get();
+  todosUsuarios = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  filtrarUsuarios();
+}
+
+function filtrarUsuarios() {
+  const busca = document.getElementById('busca-usuario').value.toLowerCase();
+  const perfil = document.getElementById('filtro-perfil-u').value;
+  const filtrados = todosUsuarios.filter(u => {
+    if (perfil && u.perfil !== perfil) return false;
+    if (busca && !`${u.nome} ${u.email}`.toLowerCase().includes(busca)) return false;
+    return true;
+  });
+  renderTabelaUsuarios(filtrados);
+}
+
+function renderTabelaUsuarios(usuarios) {
+  const el = document.getElementById('tabela-usuarios');
+  if (!usuarios.length) {
+    el.innerHTML = `<div class="empty-state"><div class="empty-icon">👤</div><p>Nenhum usuário encontrado.</p></div>`;
+    return;
+  }
+  const perfilBadge = p => {
+    const cls = { admin:'perfil-admin', tecnico:'perfil-tecnico', solicitante:'perfil-solicitante' }[p]||'';
+    const labels = { admin:'Admin', tecnico:'Técnico', solicitante:'Solicitante' };
+    return `<span class="badge-perfil ${cls}">${labels[p]||p}</span>`;
+  };
+  el.innerHTML = `<table>
+    <thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Unidade</th><th>Status</th><th>Ações</th></tr></thead>
+    <tbody>${usuarios.map(u => `
+      <tr>
+        <td>${sanitize(u.nome)}</td>
+        <td class="text-sm text-muted">${sanitize(u.email)}</td>
+        <td>${perfilBadge(u.perfil)}</td>
+        <td class="text-sm">${sanitize(u.unidadeNome||'—')}</td>
+        <td>${u.ativo!==false ? '<span class="badge" style="background:#22c55e20;color:#22c55e;border:1px solid #22c55e40">Ativo</span>' : '<span class="badge" style="background:#ef444420;color:#ef4444;border:1px solid #ef444440">Inativo</span>'}</td>
+        <td>
+          <button class="btn btn-secondary btn-xs" onclick="editarUsuario('${u.id}')" style="margin-right:4px">✏️</button>
+          ${u.ativo!==false
+            ? `<button class="btn btn-xs" style="background:#ef444420;color:#ef4444;border:1px solid #ef444440" onclick="confirmarDesativar('${u.id}','${sanitize(u.nome)}')">Desativar</button>`
+            : `<button class="btn btn-xs btn-success" onclick="ativarUsuario('${u.id}')">Ativar</button>`}
+        </td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+
+function abrirModalCadastro() {
+  editandoUid = null;
+  document.getElementById('modal-user-titulo').textContent = 'Novo Usuário';
+  document.getElementById('btn-salvar-user').textContent = 'Criar Usuário';
+  document.getElementById('u-nome').value = '';
+  document.getElementById('u-email').value = '';
+  document.getElementById('u-senha').value = '';
+  document.getElementById('u-perfil').value = 'solicitante';
+  document.getElementById('u-unidade').value = '';
+  document.getElementById('grupo-senha').style.display = '';
+  document.getElementById('u-erro').style.display = 'none';
+  onPerfilChange();
+  abrirModal('modal-usuario');
+}
+
+function editarUsuario(uid) {
+  const u = todosUsuarios.find(x => x.id === uid);
+  if (!u) return;
+  editandoUid = uid;
+  document.getElementById('modal-user-titulo').textContent = 'Editar Usuário';
+  document.getElementById('btn-salvar-user').textContent = 'Salvar Alterações';
+  document.getElementById('u-nome').value = u.nome || '';
+  document.getElementById('u-email').value = u.email || '';
+  document.getElementById('u-senha').value = '';
+  document.getElementById('u-perfil').value = u.perfil || 'solicitante';
+  document.getElementById('u-unidade').value = u.unidadeId || '';
+  document.getElementById('grupo-senha').style.display = 'none';
+  document.getElementById('u-erro').style.display = 'none';
+  onPerfilChange();
+  abrirModal('modal-usuario');
+}
+
+function onPerfilChange() {
+  const perfil = document.getElementById('u-perfil').value;
+  document.getElementById('grupo-unidade').style.display = perfil === 'solicitante' ? '' : 'none';
+}
+
+async function salvarUsuario() {
+  const nome = document.getElementById('u-nome').value.trim();
+  const email = document.getElementById('u-email').value.trim().toLowerCase();
+  const senha = document.getElementById('u-senha').value;
+  const perfil = document.getElementById('u-perfil').value;
+  const unidadeId = document.getElementById('u-unidade').value;
+  const erroEl = document.getElementById('u-erro');
+
+  erroEl.style.display = 'none';
+  if (!nome || !email) { erroEl.textContent = 'Preencha nome e e-mail.'; erroEl.style.display='block'; return; }
+  if (!editandoUid && senha.length < 8) { erroEl.textContent = 'Senha deve ter ao menos 8 caracteres.'; erroEl.style.display='block'; return; }
+  if (perfil === 'solicitante' && !unidadeId) { erroEl.textContent = 'Selecione a unidade escolar.'; erroEl.style.display='block'; return; }
+
+  const unidade = unidades.find(u => u.id === unidadeId);
+  const btn = document.getElementById('btn-salvar-user');
+  btn.disabled = true; btn.textContent = 'Salvando...';
+
+  try {
+    if (editandoUid) {
+      // Edição: só atualiza Firestore (não muda email/senha via admin SDK no front)
+      await db.collection('usuarios').doc(editandoUid).update({
+        nome,
+        perfil,
+        unidadeId: unidadeId || null,
+        unidadeNome: unidade?.nome || null,
+        atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      Toast.success('Usuário atualizado com sucesso!');
+    } else {
+      // Criação: usa Firebase Auth REST API para criar usuário
+      const projeto = firebase.app().options.projectId;
+      const apiKey = firebase.app().options.apiKey;
+      const resp = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password: senha, returnSecureToken: true })
+      });
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error.message);
+      const uid = data.localId;
+
+      await db.collection('usuarios').doc(uid).set({
+        nome, email, perfil, ativo: true,
+        unidadeId: unidadeId || null,
+        unidadeNome: unidade?.nome || null,
+        criadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      Toast.success('Usuário criado com sucesso!');
+    }
+
+    fecharModal('modal-usuario');
+    await carregarUsuarios();
+  } catch(e) {
+    const msgs = { 'EMAIL_EXISTS':'Este e-mail já está cadastrado.', 'WEAK_PASSWORD':'Senha muito fraca.', 'INVALID_EMAIL':'E-mail inválido.' };
+    erroEl.textContent = msgs[e.message] || e.message;
+    erroEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = editandoUid ? 'Salvar Alterações' : 'Criar Usuário';
+  }
+}
+
+function confirmarDesativar(uid, nome) {
+  document.getElementById('confirm-titulo').textContent = 'Desativar Usuário';
+  document.getElementById('confirm-msg').textContent = `Deseja desativar o usuário "${nome}"? Ele não poderá mais acessar o sistema.`;
+  document.getElementById('btn-confirm-ok').onclick = () => alterarStatusUsuario(uid, false);
+  abrirModal('modal-confirmar');
+}
+
+async function alterarStatusUsuario(uid, ativo) {
+  fecharModal('modal-confirmar');
+  showLoading();
+  try {
+    await db.collection('usuarios').doc(uid).update({ ativo, atualizadoEm: firebase.firestore.FieldValue.serverTimestamp() });
+    Toast.success(ativo ? 'Usuário ativado.' : 'Usuário desativado.');
+    await carregarUsuarios();
+  } catch(e) { Toast.error('Erro: ' + e.message); }
+  finally { hideLoading(); }
+}
+
+async function ativarUsuario(uid) { await alterarStatusUsuario(uid, true); }
+</script>
+</body>
+</html>

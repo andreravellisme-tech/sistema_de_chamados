@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Dashboard Técnico | TI Chamados</title>
+  <link rel="stylesheet" href="../css/style.css"/>
+</head>
+<body>
+<div class="app-layout">
+  <div id="sidebar-container"></div>
+  <div class="main-content">
+    <div id="topbar-container"></div>
+    <div class="page-body">
+
+      <div class="stats-grid">
+        <div class="stat-card danger"><div class="stat-icon">🔴</div><div class="stat-value" id="st-abertos">—</div><div class="stat-label">Meus Abertos</div></div>
+        <div class="stat-card warning"><div class="stat-icon">🟡</div><div class="stat-value" id="st-andamento">—</div><div class="stat-label">Em Andamento</div></div>
+        <div class="stat-card success"><div class="stat-icon">✅</div><div class="stat-value" id="st-resolvidos">—</div><div class="stat-label">Resolvidos (mês)</div></div>
+        <div class="stat-card info"><div class="stat-icon">📋</div><div class="stat-value" id="st-nao-atrib">—</div><div class="stat-label">Sem Técnico</div></div>
+      </div>
+
+      <!-- Chamados não atribuídos -->
+      <div class="table-wrapper" style="margin-bottom:20px;">
+        <div class="table-toolbar">
+          <h3>⚠️ Aguardando Atribuição</h3>
+          <span class="text-muted text-sm">Chamados sem técnico responsável</span>
+        </div>
+        <div id="tabela-nao-atrib"></div>
+      </div>
+
+      <!-- Meus chamados -->
+      <div class="table-wrapper">
+        <div class="table-toolbar">
+          <h3>👤 Meus Chamados</h3>
+          <select class="form-control" id="filtro-status-tec" onchange="filtrarMeus()" style="width:160px;">
+            <option value="">Todos</option>
+            <option value="aberto">Aberto</option>
+            <option value="andamento">Em Andamento</option>
+            <option value="aguardando">Aguardando</option>
+            <option value="resolvido">Resolvido</option>
+          </select>
+        </div>
+        <div id="tabela-meus"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Chamado -->
+<div class="modal-overlay" id="modal-chamado">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3 id="modal-tit">Detalhes</h3>
+      <button class="modal-close" onclick="fecharModal('modal-chamado')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body">Carregando...</div>
+    <div class="modal-footer" id="modal-footer"></div>
+  </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="../js/firebase-config.js"></script>
+<script src="../js/auth.js"></script>
+<script src="../js/utils.js"></script>
+<script src="../js/layout.js"></script>
+<script>
+let meuUid = null;
+let meusChamados = [];
+let naoAtribuidos = [];
+
+(async () => {
+  const { user, perfil } = await Auth.requireAuth(['tecnico','admin']);
+  meuUid = user.uid;
+  Layout.renderSidebar(perfil.perfil, 'dashboard', perfil);
+  Layout.renderTopbar('Dashboard Técnico');
+  NotifManager.iniciar(user.uid, perfil.perfil);
+  solicitarPermissaoNotificacao();
+  iniciarEscuta();
+
+  const params = new URLSearchParams(location.search);
+  if (params.get('chamado')) setTimeout(() => abrirChamado(params.get('chamado')), 800);
+})();
+
+function iniciarEscuta() {
+  // Chamados sem técnico
+  db.collection('chamados').where('tecnicoId','==',null).where('status','in',['aberto','aguardando'])
+    .orderBy('criadoEm','desc')
+    .onSnapshot(snap => {
+      naoAtribuidos = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      document.getElementById('st-nao-atrib').textContent = naoAtribuidos.length;
+      renderNaoAtrib();
+    });
+
+  // Meus chamados
+  db.collection('chamados').where('tecnicoId','==',meuUid)
+    .orderBy('criadoEm','desc')
+    .onSnapshot(snap => {
+      meusChamados = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const mes = new Date(); mes.setDate(1); mes.setHours(0,0,0,0);
+      document.getElementById('st-abertos').textContent = meusChamados.filter(c=>c.status==='aberto').length;
+      document.getElementById('st-andamento').textContent = meusChamados.filter(c=>c.status==='andamento').length;
+      document.getElementById('st-resolvidos').textContent = meusChamados.filter(c=>c.status==='resolvido'&&c.criadoEm?.toDate()>=mes).length;
+      filtrarMeus();
+    });
+}
+
+function renderNaoAtrib() {
+  const el = document.getElementById('tabela-nao-atrib');
+  if (!naoAtribuidos.length) {
+    el.innerHTML = `<div class="empty-state" style="padding:30px"><div class="empty-icon">✅</div><p>Nenhum chamado aguardando atribuição.</p></div>`;
+    return;
+  }
+  el.innerHTML = `<table>
+    <thead><tr><th>#</th><th>Unidade</th><th>Assunto</th><th>Prioridade</th><th>Aberto em</th><th></th></tr></thead>
+    <tbody>${naoAtribuidos.map(c => `
+      <tr>
+        <td><code style="color:var(--warning);font-size:.78rem">#${c.id.substring(0,6).toUpperCase()}</code></td>
+        <td class="text-sm">${sanitize(c.unidadeNome||'—')}</td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sanitize(c.assunto||'—')}</td>
+        <td>${badgePrioridade(c.prioridade)}</td>
+        <td class="text-muted text-sm">${tempoRelativo(c.criadoEm)}</td>
+        <td>
+          <button class="btn btn-primary btn-xs" onclick="assumirChamado('${c.id}')">Assumir</button>
+          <button class="btn btn-secondary btn-xs" onclick="abrirChamado('${c.id}')" style="margin-left:4px">Ver</button>
+        </td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+
+function filtrarMeus() {
+  const status = document.getElementById('filtro-status-tec').value;
+  const filtrados = meusChamados.filter(c => !status || c.status === status);
+  renderMeus(filtrados);
+}
+
+function renderMeus(chamados) {
+  const el = document.getElementById('tabela-meus');
+  if (!chamados.length) {
+    el.innerHTML = `<div class="empty-state" style="padding:30px"><div class="empty-icon">📭</div><p>Nenhum chamado encontrado.</p></div>`;
+    return;
+  }
+  el.innerHTML = `<table>
+    <thead><tr><th>#</th><th>Unidade</th><th>Assunto</th><th>Prioridade</th><th>Status</th><th>Aberto em</th><th></th></tr></thead>
+    <tbody>${chamados.map(c => `
+      <tr>
+        <td><code style="color:var(--accent);font-size:.78rem">#${c.id.substring(0,6).toUpperCase()}</code></td>
+        <td class="text-sm">${sanitize(c.unidadeNome||'—')}</td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sanitize(c.assunto||'—')}</td>
+        <td>${badgePrioridade(c.prioridade)}</td>
+        <td>${badgeStatus(c.status)}</td>
+        <td class="text-muted text-sm">${tempoRelativo(c.criadoEm)}</td>
+        <td><button class="btn btn-secondary btn-xs" onclick="abrirChamado('${c.id}')">Gerenciar</button></td>
+      </tr>`).join('')}
+    </tbody></table>`;
+}
+
+async function assumirChamado(id) {
+  const perfil = Auth.getPerfil();
+  showLoading('Assumindo chamado...');
+  try {
+    await db.collection('chamados').doc(id).update({
+      tecnicoId: meuUid,
+      tecnicoNome: perfil.nome,
+      status: 'andamento',
+      atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    Toast.success('Chamado assumido! Agora está em andamento.');
+  } catch(e) { Toast.error('Erro: '+e.message); }
+  finally { hideLoading(); }
+}
+
+async function abrirChamado(id) {
+  abrirModal('modal-chamado');
+  document.getElementById('modal-body').innerHTML = `<div class="empty-state"><div class="spinner" style="margin:auto"></div></div>`;
+  document.getElementById('modal-footer').innerHTML = '';
+
+  const snap = await db.collection('chamados').doc(id).get();
+  if (!snap.exists) return;
+  const c = { id: snap.id, ...snap.data() };
+  document.getElementById('modal-tit').textContent = `#${id.substring(0,6).toUpperCase()} — ${c.assunto}`;
+
+  const statusOpts = ['aberto','andamento','aguardando','resolvido','cancelado']
+    .map(s => `<option value="${s}" ${c.status===s?'selected':''}>${STATUS_CONFIG[s]?.label||s}</option>`).join('');
+
+  document.getElementById('modal-body').innerHTML = `
+    <div class="detail-section">
+      <h4>Informações</h4>
+      <div class="detail-grid">
+        <div class="detail-item"><label>Unidade</label><span>${sanitize(c.unidadeNome||'—')}</span></div>
+        <div class="detail-item"><label>Solicitante</label><span>${sanitize(c.solicitanteNome||'—')}</span></div>
+        <div class="detail-item"><label>Categoria</label><span>${sanitize(c.categoria||'—')}</span></div>
+        <div class="detail-item"><label>Patrimônio</label><span>${sanitize(c.patrimonio||'—')}</span></div>
+        <div class="detail-item"><label>Prioridade</label><span>${badgePrioridade(c.prioridade)}</span></div>
+        <div class="detail-item"><label>Abertura</label><span>${formatarData(c.criadoEm)}</span></div>
+      </div>
+    </div>
+    <div class="detail-section">
+      <h4>Descrição</h4>
+      <div class="chamado-desc">${sanitize(c.descricao||'Sem descrição.')}</div>
+    </div>
+    <div class="detail-section">
+      <h4>Atualizar Status</h4>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Novo Status</label>
+          <select class="form-control" id="tec-status">${statusOpts}</select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Observação / Solução</label>
+        <textarea class="form-control" id="tec-obs" rows="3" placeholder="Descreva o que foi feito...">${sanitize(c.observacao||'')}</textarea>
+      </div>
+    </div>`;
+
+  document.getElementById('modal-footer').innerHTML = `
+    <button class="btn btn-secondary" onclick="fecharModal('modal-chamado')">Fechar</button>
+    <button class="btn btn-primary" onclick="atualizarStatus('${id}')">💾 Atualizar</button>`;
+}
+
+async function atualizarStatus(id) {
+  const status = document.getElementById('tec-status').value;
+  const obs = document.getElementById('tec-obs').value.trim();
+  showLoading('Atualizando...');
+  try {
+    await db.collection('chamados').doc(id).update({
+      status, observacao: obs,
+      atualizadoEm: firebase.firestore.FieldValue.serverTimestamp(),
+      atualizadoPor: meuUid,
+    });
+    fecharModal('modal-chamado');
+    Toast.success('Chamado atualizado!');
+  } catch(e) { Toast.error('Erro: '+e.message); }
+  finally { hideLoading(); }
+}
+</script>
+</body>
+</html>
