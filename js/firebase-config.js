@@ -4,13 +4,13 @@
 // ============================================================
 
 const firebaseConfig = {
-  apiKey: "AIzaSyA_JFdju1pcwYayX5J3Nh-Fru0gKteXGbw",
-  authDomain: "ti-chamados-escolar.firebaseapp.com",
-  projectId: "ti-chamados-escolar",
-  storageBucket: "ti-chamados-escolar.firebasestorage.app",
-  messagingSenderId: "403272914832",
-  appId: "1:403272914832:web:f400eb38304a06fb5b8515",
-  measurementId: "G-8N57XX2EZQ"
+  apiKey: "AIzaSyBu7afq2XzjLN-gbi-ayLx_fjyCqJN0WVQ",
+  authDomain: "sistema-de-chamados-b8185.firebaseapp.com",
+  projectId: "sistema-de-chamados-b8185",
+  storageBucket: "sistema-de-chamados-b8185.firebasestorage.app",
+  messagingSenderId: "673764598147",
+  appId: "1:673764598147:web:b8bd29d035a7d4e95096b6",
+  measurementId: "G-Z19209LDSX"
 };
 
 // Inicializa o Firebase
