@@ -28,7 +28,7 @@
 //    Copie o UID gerado
 //
 // 2. Vá em Firestore > usuarios > Add Document
-//    Document ID: [cole o UID copiado]
+//    Document ID: 3JAxGygxgdg0T3SM8zoJeJLGykA2
 //    Campos:
 //      nome     (string): "Administrador"
 //      email    (string): "admin@suaescola.edu.br"
