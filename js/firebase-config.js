@@ -3,6 +3,7 @@
 // do Firebase Console > Configurações do projeto > Seus apps
 // ============================================================
 
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
   apiKey: "AIzaSyBu7afq2XzjLN-gbi-ayLx_fjyCqJN0WVQ",
   authDomain: "sistema-de-chamados-b8185.firebaseapp.com",
