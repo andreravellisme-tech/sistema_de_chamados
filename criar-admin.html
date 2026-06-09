@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TI Escolar · Criar Administrador</title>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #08090e; color: #dce5f5;
+    font-family: 'Segoe UI', sans-serif;
+    min-height: 100vh; display: flex;
+    align-items: center; justify-content: center;
+  }
+  .box {
+    background: #0f1117; border: 1px solid #2d3555;
+    border-radius: 14px; padding: 36px; width: 420px;
+    box-shadow: 0 30px 80px rgba(0,0,0,.6);
+  }
+  .logo { text-align: center; margin-bottom: 28px; }
+  .logo h1 { font-size: 18px; color: #4d8fff; margin-bottom: 6px; }
+  .logo p  { font-size: 12px; color: #7a89b8; }
+  .fg { margin-bottom: 14px; }
+  .fg label { display: block; font-size: 11px; color: #7a89b8; margin-bottom: 5px; text-transform: uppercase; letter-spacing: .05em; }
+  .fc { width: 100%; background: #08090e; border: 1px solid #2d3555; border-radius: 7px; padding: 9px 12px; color: #dce5f5; font-size: 13px; outline: none; font-family: inherit; }
+  .fc:focus { border-color: #4d8fff; box-shadow: 0 0 0 3px rgba(77,143,255,.15); }
+  .btn { width: 100%; background: #4d8fff; color: #fff; border: none; border-radius: 7px; padding: 11px; font-size: 13px; font-weight: 600; cursor: pointer; margin-top: 6px; font-family: inherit; }
+  .btn:hover { filter: brightness(1.15); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .msg { border-radius: 8px; padding: 12px 14px; font-size: 12px; margin-bottom: 14px; display: none; line-height: 1.6; }
+  .msg.ok   { background: #062818; border: 1px solid #34d17a; color: #34d17a; display: block; }
+  .msg.erro { background: #2a0808; border: 1px solid #f25757; color: #f25757; display: block; }
+  .msg.info { background: #0a1f4a; border: 1px solid #4d8fff; color: #4d8fff; display: block; }
+  .sep { border: none; border-top: 1px solid #1f2538; margin: 20px 0; }
+  .step { background: #181c27; border-radius: 8px; padding: 14px; margin-bottom: 12px; font-size: 12px; color: #7a89b8; line-height: 1.7; }
+  .step strong { color: #dce5f5; }
+  .step a { color: #4d8fff; }
+  .badge { display: inline-block; background: #2a1e00; color: #f0b429; border: 1px solid rgba(240,180,41,.3); border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 600; margin-left: 4px; }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="logo">
+    <h1>🔐 TI Escolar</h1>
+    <p>Criação do primeiro Administrador</p>
+  </div>
+
+  <div class="step">
+    <strong>Como usar:</strong><br>
+    1. Preencha e-mail e senha do administrador<br>
+    2. Clique em <strong>"Criar Administrador"</strong><br>
+    3. O usuário será criado no Firebase Auth <strong>e</strong> registrado no Firestore automaticamente<br>
+    4. <strong>Apague este arquivo</strong> do servidor após usar
+  </div>
+
+  <div id="msg" class="msg"></div>
+
+  <div class="fg">
+    <label>Nome completo</label>
+    <input class="fc" id="nome" type="text" placeholder="Ex: André Ravelli">
+  </div>
+  <div class="fg">
+    <label>E-mail</label>
+    <input class="fc" id="email" type="email" placeholder="admin@sme.edu.br">
+  </div>
+  <div class="fg">
+    <label>Senha <span class="badge">mín. 8 caracteres</span></label>
+    <input class="fc" id="senha" type="password" placeholder="Senha forte">
+  </div>
+
+  <button class="btn" id="btnCriar" onclick="criarAdmin()">✓ Criar Administrador</button>
+
+  <hr class="sep">
+
+  <div style="margin-bottom:16px">
+    <div style="font-size:11px;color:#7a89b8;margin-bottom:8px;text-align:center">
+      Já criou o usuário no Firebase Auth mas não consegue registrar no Firestore?
+    </div>
+    <div style="display:flex;gap:8px">
+      <input class="fc" id="emailExist" type="email" placeholder="E-mail já cadastrado no Auth">
+      <input class="fc" id="senhaExist" type="password" placeholder="Senha do Auth" style="width:140px">
+    </div>
+    <div class="fg" style="margin-top:8px">
+      <input class="fc" id="nomeExist" type="text" placeholder="Nome completo">
+    </div>
+    <button class="btn" id="btnLogin" onclick="registrarExistente()" style="background:#1a0f3a;border:1px solid rgba(167,139,250,.4);color:#a78bfa;margin-top:4px">
+      🔑 Já tenho conta — só registrar no Firestore
+    </button>
+  </div>
+
+  <hr class="sep">
+  <div style="font-size:11px;color:#3d4a6b;text-align:center">
+    ⚠️ Apague este arquivo do servidor após criar o administrador
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════
+// MESMA CONFIG DO SEU SISTEMA — não precisa alterar
+// ════════════════════════════════════════════════════
+const firebaseConfig = {
+  apiKey:            "AIzaSyBu7afq2XzjLN-gbi-ayLx_fjyCqJN0WVQ",
+  authDomain:        "sistema-de-chamados-b8185.firebaseapp.com",
+  projectId:         "sistema-de-chamados-b8185",
+  storageBucket:     "sistema-de-chamados-b8185.firebasestorage.app",
+  messagingSenderId: "673764598147",
+  appId:             "1:673764598147:web:43b161210a3f14725096b6"
+};
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db   = firebase.firestore();
+
+function msg(texto, tipo) {
+  const el = document.getElementById('msg');
+  el.textContent = texto;
+  el.className = 'msg ' + tipo;
+}
+
+async function criarAdmin() {
+  const nome  = document.getElementById('nome').value.trim();
+  const email = document.getElementById('email').value.trim();
+  const senha = document.getElementById('senha').value;
+  const btn   = document.getElementById('btnCriar');
+
+  if (!nome || !email || !senha) { msg('Preencha todos os campos.', 'erro'); return; }
+  if (senha.length < 8)          { msg('A senha precisa ter pelo menos 8 caracteres.', 'erro'); return; }
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Criando...';
+  msg('Criando usuário no Firebase Auth...', 'info');
+
+  try {
+    // 1. Criar no Firebase Authentication
+    const cred = await auth.createUserWithEmailAndPassword(email, senha);
+    const uid  = cred.user.uid;
+    msg('✓ Usuário criado no Auth. Registrando no Firestore...', 'info');
+
+    // 2. Fazer login com as credenciais recém-criadas
+    // (necessário para ter permissão de gravar o próprio perfil)
+    await auth.signInWithEmailAndPassword(email, senha);
+
+    // 3. Registrar no Firestore — agora autenticado como o próprio usuário
+    await db.collection('usuarios').doc(uid).set({
+      uid,
+      nome,
+      email,
+      role:      'admin',
+      ativo:     true,
+      criadoEm:  new Date().toISOString()
+    });
+
+    msg(
+      '✅ Administrador criado com sucesso!\n\n' +
+      'Nome: ' + nome + '\n' +
+      'E-mail: ' + email + '\n' +
+      'UID: ' + uid + '\n\n' +
+      'Agora faça login no sistema principal e APAGUE este arquivo do GitHub.',
+      'ok'
+    );
+    btn.textContent = '✓ Criado com sucesso!';
+
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = '✓ Criar Administrador';
+    const erros = {
+      'auth/email-already-in-use': 'Este e-mail já existe no Firebase Auth. Clique em "Já tenho conta no Auth" abaixo.',
+      'auth/weak-password':        'Senha muito fraca. Use pelo menos 8 caracteres com letras e números.',
+      'auth/invalid-email':        'E-mail inválido.',
+      'permission-denied':         'Permissão negada pelo Firestore. Verifique as regras do banco de dados.'
+    };
+    msg('❌ ' + (erros[e.code] || e.message), 'erro');
+  }
+}
+
+async function registrarExistente() {
+  const email = document.getElementById('emailExist').value.trim();
+  const senha  = document.getElementById('senhaExist').value;
+  const nome  = document.getElementById('nomeExist').value.trim();
+  const btn   = document.getElementById('btnLogin');
+  if (!email || !senha || !nome) { msg('Preencha e-mail, senha e nome no bloco inferior.', 'erro'); return; }
+  btn.disabled = true; btn.textContent = '⏳ Autenticando...';
+  msg('Fazendo login para registrar no Firestore...', 'info');
+  try {
+    const cred = await auth.signInWithEmailAndPassword(email, senha);
+    const uid  = cred.user.uid;
+    await db.collection('usuarios').doc(uid).set({
+      uid, nome, email, role: 'admin', ativo: true, criadoEm: new Date().toISOString()
+    });
+    msg('✅ Administrador registrado com sucesso!
+
+Nome: ' + nome + '
+E-mail: ' + email + '
+UID: ' + uid + '
+
+Faça login no sistema e APAGUE este arquivo.', 'ok');
+    btn.textContent = '✓ Registrado!';
+  } catch(e) {
+    btn.disabled = false; btn.textContent = '🔑 Já tenho conta — só registrar no Firestore';
+    const erros = {
+      'auth/wrong-password': 'Senha incorreta.',
+      'auth/user-not-found': 'E-mail não encontrado no Firebase Auth.',
+      'permission-denied':   'Permissão negada. Aplique as regras temporárias (allow read, write: if true) no Firestore Console.'
+    };
+    msg('❌ ' + (erros[e.code] || e.message), 'erro');
+  }
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') criarAdmin();
+});
+</script>
+</body>
+</html>
